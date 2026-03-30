@@ -29,10 +29,7 @@
 //! assert!((td - 1.0).abs() < 0.01); // ~1 hour
 //! ```
 
-#![cfg_attr(not(feature = "std"), no_std)]
 #![warn(missing_docs)]
-
-extern crate alloc;
 
 pub mod biofilm;
 pub mod epidemiology;

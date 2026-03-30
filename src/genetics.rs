@@ -1,11 +1,8 @@
 //! Microbial genetics — mutation rates, Hardy-Weinberg, GC content, gene transfer.
 
-extern crate alloc;
-use alloc::string::String;
-
 use serde::{Deserialize, Serialize};
 
-use crate::error::{validate_finite, validate_positive, JivanuError, Result};
+use crate::error::{JivanuError, Result, validate_finite, validate_positive};
 
 /// Mutation rate per base per generation.
 ///
@@ -18,9 +15,7 @@ use crate::error::{validate_finite, validate_positive, JivanuError, Result};
 #[must_use = "returns the mutation rate without side effects"]
 pub fn mutation_rate(mutations: u64, bases: u64, generations: u64) -> Result<f64> {
     if bases == 0 {
-        return Err(JivanuError::ComputationError(
-            "bases must be > 0".into(),
-        ));
+        return Err(JivanuError::ComputationError("bases must be > 0".into()));
     }
     if generations == 0 {
         return Err(JivanuError::ComputationError(
@@ -78,9 +73,9 @@ pub fn gc_content(dna: &str) -> Result<f64> {
                 total += 1;
             }
             _ => {
-                return Err(JivanuError::ComputationError(
-                    alloc::format!("invalid DNA character: {c}"),
-                ));
+                return Err(JivanuError::ComputationError(format!(
+                    "invalid DNA character: {c}"
+                )));
             }
         }
     }
@@ -174,9 +169,9 @@ pub fn translate_codon(codon: &str) -> Result<char> {
         "CGT" | "CGC" | "CGA" | "CGG" | "AGA" | "AGG" => Ok('R'),
         // Glycine
         "GGT" | "GGC" | "GGA" | "GGG" => Ok('G'),
-        _ => Err(JivanuError::ComputationError(
-            alloc::format!("unknown codon: {codon_upper}"),
-        )),
+        _ => Err(JivanuError::ComputationError(format!(
+            "unknown codon: {codon_upper}"
+        ))),
     }
 }
 

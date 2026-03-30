@@ -2,7 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{validate_finite, validate_non_negative, validate_positive, JivanuError, Result};
+use crate::error::{
+    JivanuError, Result, validate_finite, validate_non_negative, validate_positive,
+};
 
 /// Exponential growth: `N = N0 * e^(r * t)`.
 ///

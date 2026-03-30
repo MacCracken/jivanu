@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{validate_non_negative, validate_positive, Result};
+use crate::error::{Result, validate_non_negative, validate_positive};
 
 /// Antibiotic classes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

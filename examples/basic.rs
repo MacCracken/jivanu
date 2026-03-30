@@ -15,12 +15,12 @@ fn main() {
 
     // Genetics: GC content
     let gc = jivanu::genetics::gc_content("ATGCATGCATGC").unwrap();
-    println!("GC content of ATGCATGCATGC: {gc:.1%}");
+    println!("GC content of ATGCATGCATGC: {:.1}%", gc * 100.0);
 
     // Epidemiology: R0 and herd immunity
     let r0 = jivanu::epidemiology::r_naught(0.5, 0.2).unwrap();
     let h = jivanu::epidemiology::herd_immunity_threshold(r0).unwrap();
-    println!("R0 = {r0:.1}, herd immunity = {h:.1%}");
+    println!("R0 = {r0:.1}, herd immunity = {:.1}%", h * 100.0);
 
     // Hardy-Weinberg
     let (p2, pq2, q2) = jivanu::genetics::hardy_weinberg(0.6).unwrap();

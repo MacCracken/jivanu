@@ -1,11 +1,8 @@
 //! Epidemiology — SIR/SEIR models, R0, herd immunity.
 
-extern crate alloc;
-use alloc::vec::Vec;
-
 use serde::{Deserialize, Serialize};
 
-use crate::error::{validate_non_negative, validate_positive, Result};
+use crate::error::{Result, validate_non_negative, validate_positive};
 
 /// SIR compartmental model state.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -56,6 +53,19 @@ pub struct SeirState {
     pub r: f64,
 }
 
+/// Parameters for the SEIR model.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct SeirParams {
+    /// Transmission rate.
+    pub beta: f64,
+    /// Rate at which exposed become infectious (1/incubation period).
+    pub sigma: f64,
+    /// Recovery rate.
+    pub gamma: f64,
+    /// Time step.
+    pub dt: f64,
+}
+
 /// One step of the SEIR model.
 ///
 /// `sigma` is the rate at which exposed become infectious (1/incubation period).
@@ -64,16 +74,14 @@ pub struct SeirState {
 ///
 /// Returns error if parameters are invalid.
 #[must_use = "returns the new SEIR state without side effects"]
-pub fn seir_step(
-    s: f64,
-    e: f64,
-    i: f64,
-    r: f64,
-    beta: f64,
-    sigma: f64,
-    gamma: f64,
-    dt: f64,
-) -> Result<SeirState> {
+pub fn seir_step(state: &SeirState, params: &SeirParams) -> Result<SeirState> {
+    let SeirState { s, e, i, r } = *state;
+    let SeirParams {
+        beta,
+        sigma,
+        gamma,
+        dt,
+    } = *params;
     validate_non_negative(s, "s")?;
     validate_non_negative(e, "e")?;
     validate_non_negative(i, "i")?;
@@ -213,8 +221,20 @@ mod tests {
 
     #[test]
     fn test_seir_step() {
-        let state = seir_step(0.98, 0.01, 0.01, 0.0, 0.5, 0.2, 0.1, 0.01).unwrap();
-        let total = state.s + state.e + state.i + state.r;
+        let state = SeirState {
+            s: 0.98,
+            e: 0.01,
+            i: 0.01,
+            r: 0.0,
+        };
+        let params = SeirParams {
+            beta: 0.5,
+            sigma: 0.2,
+            gamma: 0.1,
+            dt: 0.01,
+        };
+        let new_state = seir_step(&state, &params).unwrap();
+        let total = new_state.s + new_state.e + new_state.i + new_state.r;
         assert!((total - 1.0).abs() < 0.01);
     }
 

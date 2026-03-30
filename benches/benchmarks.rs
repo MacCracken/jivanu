@@ -1,4 +1,5 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
+use std::hint::black_box;
 
 fn bench_monod(c: &mut Criterion) {
     c.bench_function("growth/monod_kinetics", |b| {
@@ -8,7 +9,9 @@ fn bench_monod(c: &mut Criterion) {
 
 fn bench_michaelis_menten(c: &mut Criterion) {
     c.bench_function("metabolism/michaelis_menten", |b| {
-        b.iter(|| jivanu::metabolism::michaelis_menten(black_box(5.0), black_box(10.0), black_box(1.0)))
+        b.iter(|| {
+            jivanu::metabolism::michaelis_menten(black_box(5.0), black_box(10.0), black_box(1.0))
+        })
     });
 }
 
@@ -36,7 +39,9 @@ fn bench_gc_content(c: &mut Criterion) {
 
 fn bench_exponential_growth(c: &mut Criterion) {
     c.bench_function("growth/exponential_growth", |b| {
-        b.iter(|| jivanu::growth::exponential_growth(black_box(100.0), black_box(0.5), black_box(10.0)))
+        b.iter(|| {
+            jivanu::growth::exponential_growth(black_box(100.0), black_box(0.5), black_box(10.0))
+        })
     });
 }
 

@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{validate_finite, validate_non_negative, validate_positive, Result};
+use crate::error::{Result, validate_finite, validate_non_negative, validate_positive};
 
 /// Stages of biofilm development.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -41,11 +41,7 @@ pub fn quorum_sensing(signal_concentration: f64, threshold: f64) -> Result<bool>
 /// Returns error if parameters are invalid.
 #[inline]
 #[must_use = "returns the diffusion flux without side effects"]
-pub fn diffusion_through_matrix(
-    nutrient: f64,
-    thickness: f64,
-    diffusivity: f64,
-) -> Result<f64> {
+pub fn diffusion_through_matrix(nutrient: f64, thickness: f64, diffusivity: f64) -> Result<f64> {
     validate_non_negative(nutrient, "nutrient")?;
     validate_positive(thickness, "thickness")?;
     validate_positive(diffusivity, "diffusivity")?;
