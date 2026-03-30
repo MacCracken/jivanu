@@ -12,7 +12,8 @@
 //! - [`genetics`] — Mutation rates, Hardy-Weinberg, GC content, codon table
 //! - [`epidemiology`] — SIR/SEIR models, R0, herd immunity
 //! - [`biofilm`] — Formation stages, quorum sensing, diffusion
-//! - [`resistance`] — Kill curves, MIC, resistance transfer
+//! - [`resistance`] — Kill curves, MIC, resistance transfer, drug combinations
+//! - [`pharmacokinetics`] — Drug concentration models, PK parameters, AUC
 //! - [`taxonomy`] — Domain, Gram stain, morphology, oxygen requirements
 //!
 //! ## Example
@@ -37,6 +38,7 @@ pub mod error;
 pub mod genetics;
 pub mod growth;
 pub mod metabolism;
+pub mod pharmacokinetics;
 pub mod resistance;
 pub mod taxonomy;
 

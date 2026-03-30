@@ -103,6 +103,62 @@ pub fn competitive_inhibition(
     Ok(v_max * substrate / (apparent_km + substrate))
 }
 
+/// Michaelis-Menten with uncompetitive inhibition.
+///
+/// `v = V_max * [S] / (K_m + [S] * (1 + [I]/K_i))`
+///
+/// The inhibitor binds only the enzyme-substrate complex, reducing both
+/// the apparent V_max and K_m by the same factor.
+///
+/// # Errors
+///
+/// Returns error if parameters are invalid.
+#[inline]
+#[must_use = "returns the inhibited rate without side effects"]
+pub fn uncompetitive_inhibition(
+    substrate: f64,
+    v_max: f64,
+    k_m: f64,
+    inhibitor: f64,
+    k_i: f64,
+) -> Result<f64> {
+    validate_non_negative(substrate, "substrate")?;
+    validate_positive(v_max, "v_max")?;
+    validate_positive(k_m, "k_m")?;
+    validate_non_negative(inhibitor, "inhibitor")?;
+    validate_positive(k_i, "k_i")?;
+    let alpha_prime = 1.0 + inhibitor / k_i;
+    Ok(v_max * substrate / (k_m + substrate * alpha_prime))
+}
+
+/// Michaelis-Menten with noncompetitive inhibition.
+///
+/// `v = V_max * [S] / ((K_m + [S]) * (1 + [I]/K_i))`
+///
+/// The inhibitor binds both free enzyme and enzyme-substrate complex
+/// equally, reducing V_max without affecting K_m.
+///
+/// # Errors
+///
+/// Returns error if parameters are invalid.
+#[inline]
+#[must_use = "returns the inhibited rate without side effects"]
+pub fn noncompetitive_inhibition(
+    substrate: f64,
+    v_max: f64,
+    k_m: f64,
+    inhibitor: f64,
+    k_i: f64,
+) -> Result<f64> {
+    validate_non_negative(substrate, "substrate")?;
+    validate_positive(v_max, "v_max")?;
+    validate_positive(k_m, "k_m")?;
+    validate_non_negative(inhibitor, "inhibitor")?;
+    validate_positive(k_i, "k_i")?;
+    let alpha = 1.0 + inhibitor / k_i;
+    Ok(v_max * substrate / ((k_m + substrate) * alpha))
+}
+
 /// Fermentation type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -334,6 +390,58 @@ mod tests {
         let v = competitive_inhibition(1.0, 10.0, 1.0, 0.0, 1.0).unwrap();
         let v_mm = michaelis_menten(1.0, 10.0, 1.0).unwrap();
         assert!((v - v_mm).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_uncompetitive_inhibition_reduces_rate() {
+        let v_no = michaelis_menten(1.0, 10.0, 1.0).unwrap();
+        let v_inh = uncompetitive_inhibition(1.0, 10.0, 1.0, 1.0, 1.0).unwrap();
+        assert!(v_inh < v_no);
+    }
+
+    #[test]
+    fn test_uncompetitive_inhibition_zero_inhibitor() {
+        let v = uncompetitive_inhibition(1.0, 10.0, 1.0, 0.0, 1.0).unwrap();
+        let v_mm = michaelis_menten(1.0, 10.0, 1.0).unwrap();
+        assert!((v - v_mm).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_noncompetitive_inhibition_reduces_rate() {
+        let v_no = michaelis_menten(1.0, 10.0, 1.0).unwrap();
+        let v_inh = noncompetitive_inhibition(1.0, 10.0, 1.0, 1.0, 1.0).unwrap();
+        assert!(v_inh < v_no);
+    }
+
+    #[test]
+    fn test_noncompetitive_inhibition_zero_inhibitor() {
+        let v = noncompetitive_inhibition(1.0, 10.0, 1.0, 0.0, 1.0).unwrap();
+        let v_mm = michaelis_menten(1.0, 10.0, 1.0).unwrap();
+        assert!((v - v_mm).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_noncompetitive_does_not_change_km() {
+        // At [S] = K_m, noncompetitive should give V_max/(2*alpha)
+        let v = noncompetitive_inhibition(1.0, 10.0, 1.0, 1.0, 1.0).unwrap();
+        // alpha = 1 + 1/1 = 2, so v = 10*1 / ((1+1)*2) = 10/4 = 2.5
+        assert!((v - 2.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_inhibition_types_differ() {
+        // All three inhibition types should give different rates
+        let v_comp = competitive_inhibition(2.0, 10.0, 1.0, 1.0, 1.0).unwrap();
+        let v_uncomp = uncompetitive_inhibition(2.0, 10.0, 1.0, 1.0, 1.0).unwrap();
+        let v_noncomp = noncompetitive_inhibition(2.0, 10.0, 1.0, 1.0, 1.0).unwrap();
+        // All should be less than uninhibited
+        let v_mm = michaelis_menten(2.0, 10.0, 1.0).unwrap();
+        assert!(v_comp < v_mm);
+        assert!(v_uncomp < v_mm);
+        assert!(v_noncomp < v_mm);
+        // They should differ from each other
+        assert!((v_comp - v_uncomp).abs() > 0.01);
+        assert!((v_comp - v_noncomp).abs() > 0.01);
     }
 
     #[test]

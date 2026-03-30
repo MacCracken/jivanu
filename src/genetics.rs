@@ -543,6 +543,101 @@ pub const fn codon_degeneracy(aa: AminoAcid) -> u8 {
     }
 }
 
+/// Reverse complement of a DNA sequence.
+///
+/// `A↔T`, `G↔C`. The result is reversed and complemented.
+///
+/// # Errors
+///
+/// Returns error if the sequence contains non-DNA characters.
+#[must_use = "returns the reverse complement without side effects"]
+pub fn reverse_complement(dna: &str) -> Result<String> {
+    let mut result = Vec::with_capacity(dna.len());
+    for b in dna.bytes().rev() {
+        let comp = match b.to_ascii_uppercase() {
+            b'A' => b'T',
+            b'T' => b'A',
+            b'G' => b'C',
+            b'C' => b'G',
+            _ => {
+                return Err(JivanuError::ComputationError(format!(
+                    "invalid DNA character: {}",
+                    b as char
+                )));
+            }
+        };
+        result.push(comp);
+    }
+    // Safe: all bytes are ASCII
+    Ok(unsafe { String::from_utf8_unchecked(result) })
+}
+
+/// Translate a DNA coding sequence (open reading frame) to a protein sequence.
+///
+/// Reads codons in-frame from the start of the sequence. Stops at the first
+/// stop codon or end of sequence. Partial trailing codons are ignored.
+///
+/// Returns the amino acid sequence as single-letter IUPAC codes.
+///
+/// # Errors
+///
+/// Returns error if any codon contains invalid DNA characters.
+#[must_use = "returns the protein sequence without side effects"]
+pub fn translate_orf(dna: &str) -> Result<String> {
+    let bytes = dna.as_bytes();
+    let mut protein = String::with_capacity(bytes.len() / 3);
+    let mut i = 0;
+    while i + 3 <= bytes.len() {
+        let codon = &dna[i..i + 3];
+        let aa = translate_codon_to_aa(codon)?;
+        if aa == AminoAcid::Stop {
+            break;
+        }
+        protein.push(aa.one_letter());
+        i += 3;
+    }
+    Ok(protein)
+}
+
+/// Estimated molecular weight of a protein from its amino acid sequence.
+///
+/// Sums individual amino acid weights and subtracts water (18.015 Da)
+/// for each peptide bond formed.
+///
+/// Accepts single-letter IUPAC codes. Stop codons (`*`) are ignored.
+///
+/// # Errors
+///
+/// Returns error if the sequence is empty or contains invalid characters.
+#[must_use = "returns the molecular weight without side effects"]
+pub fn protein_molecular_weight(sequence: &str) -> Result<f64> {
+    if sequence.is_empty() {
+        return Err(JivanuError::ComputationError(
+            "protein sequence must not be empty".into(),
+        ));
+    }
+    let mut total = 0.0;
+    let mut count = 0u64;
+    for c in sequence.chars() {
+        if c == '*' {
+            continue;
+        }
+        let aa = AminoAcid::from_one_letter(c)?;
+        total += aa.molecular_weight();
+        count += 1;
+    }
+    if count == 0 {
+        return Err(JivanuError::ComputationError(
+            "protein sequence contains no amino acids".into(),
+        ));
+    }
+    // Subtract water for each peptide bond (count - 1 bonds)
+    if count > 1 {
+        total -= (count - 1) as f64 * 18.015;
+    }
+    Ok(total)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -910,6 +1005,102 @@ mod tests {
         let json = serde_json::to_string(&cc).unwrap();
         let back: ChargeClass = serde_json::from_str(&json).unwrap();
         assert_eq!(cc, back);
+    }
+
+    // --- Sequence utility tests ---
+
+    #[test]
+    fn test_reverse_complement_simple() {
+        assert_eq!(reverse_complement("ATGC").unwrap(), "GCAT");
+    }
+
+    #[test]
+    fn test_reverse_complement_palindrome() {
+        // ATAT → reverse = TATA → complement = ATAT
+        assert_eq!(reverse_complement("ATAT").unwrap(), "ATAT");
+    }
+
+    #[test]
+    fn test_reverse_complement_case_insensitive() {
+        assert_eq!(reverse_complement("atgc").unwrap(), "GCAT");
+    }
+
+    #[test]
+    fn test_reverse_complement_invalid() {
+        assert!(reverse_complement("ATXG").is_err());
+    }
+
+    #[test]
+    fn test_translate_orf_met_only() {
+        assert_eq!(translate_orf("ATG").unwrap(), "M");
+    }
+
+    #[test]
+    fn test_translate_orf_with_stop() {
+        // ATG GCT TAA → M A (stop)
+        assert_eq!(translate_orf("ATGGCTTAA").unwrap(), "MA");
+    }
+
+    #[test]
+    fn test_translate_orf_no_stop() {
+        // ATG GCT GCT → M A A (no stop, reads to end)
+        assert_eq!(translate_orf("ATGGCTGCT").unwrap(), "MAA");
+    }
+
+    #[test]
+    fn test_translate_orf_partial_codon_ignored() {
+        // ATG GC → M (trailing 2 bases ignored)
+        assert_eq!(translate_orf("ATGGC").unwrap(), "M");
+    }
+
+    #[test]
+    fn test_translate_orf_empty() {
+        assert_eq!(translate_orf("").unwrap(), "");
+    }
+
+    #[test]
+    fn test_translate_orf_invalid() {
+        assert!(translate_orf("XYZ").is_err());
+    }
+
+    #[test]
+    fn test_protein_molecular_weight_single_aa() {
+        // Single glycine: no peptide bonds
+        let mw = protein_molecular_weight("G").unwrap();
+        assert!((mw - 75.032).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_protein_molecular_weight_dipeptide() {
+        // G-A dipeptide: 75.032 + 89.094 - 18.015 = 146.111
+        let mw = protein_molecular_weight("GA").unwrap();
+        assert!((mw - 146.111).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_protein_molecular_weight_ignores_stop() {
+        let mw_with = protein_molecular_weight("GA*").unwrap();
+        let mw_without = protein_molecular_weight("GA").unwrap();
+        assert!((mw_with - mw_without).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_protein_molecular_weight_empty() {
+        assert!(protein_molecular_weight("").is_err());
+    }
+
+    #[test]
+    fn test_protein_molecular_weight_invalid() {
+        assert!(protein_molecular_weight("GXA").is_err());
+    }
+
+    #[test]
+    fn test_translate_orf_to_protein_mw_pipeline() {
+        // Full pipeline: DNA → protein → MW
+        let protein = translate_orf("ATGGCTTAA").unwrap(); // MA
+        let mw = protein_molecular_weight(&protein).unwrap();
+        // M (149.208) + A (89.094) - water (18.015) = 220.287
+        assert!((mw - 220.287).abs() < 0.001);
     }
 
     #[test]
