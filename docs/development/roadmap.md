@@ -25,13 +25,17 @@
 - [x] Uncompetitive and noncompetitive enzyme inhibition
 - [x] SEIR trajectory function
 
+- [x] Cross-module bridge: PK → resistance time-kill simulations, PK/PD indices
+- [x] Taxonomy functions (domain/gram/shape/oxygen queries, profile heuristics)
+- [x] Model validation test suite (18 tests with literature citations)
+- [x] Integration tests expanded to cover all 10 modules
+
 ### Remaining
 
-- [ ] Expand integration tests to all modules
-- [ ] Cross-module bridges (PK → resistance, competition → biofilm)
-- [ ] Validate all models against published reference data
-- [ ] Taxonomy functions (classification logic, trait queries)
 - [ ] Stochastic growth models (Gillespie algorithm via pramana)
+- [ ] Competition → biofilm coupling
+- [ ] Benchmarks for all public functions
+- [ ] kimiya bridge module
 
 ## v1.0 Criteria
 

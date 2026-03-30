@@ -57,6 +57,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Uncompetitive enzyme inhibition
 - Noncompetitive enzyme inhibition
 
+#### Bridge (new module)
+- PK-driven IV time-kill simulation (`iv_time_kill`)
+- PK-driven oral time-kill simulation (`oral_time_kill`)
+- PK/PD indices: T>MIC, Cmax/MIC, AUC/MIC
+- Multi-dose IV bolus concentration with superposition
+- Steady-state trough concentration
+- Regrowth time prediction
+- Dose calculation for target Cmax/MIC ratio
+
+#### Taxonomy
+- Domain trait queries (`is_eukaryotic`, `is_prokaryotic`)
+- Gram stain properties (`has_outer_membrane`)
+- Cell shape classification (`is_elongated`)
+- Oxygen tolerance queries (`tolerates_oxygen`, `tolerates_anaerobic`)
+- Microbial profile heuristics (`beta_lactam_susceptible`, `can_form_endospores`, `likely_motile`)
+
+#### Validation
+- 18 literature-validated tests with cited sources (Monod, Michaelis-Menten, measles/COVID herd immunity, gentamicin PK, Kyte-Doolittle, EUCAST FIC)
+
 ### Changed
 
 - Epidemiology ODE integration refactored to use `hisab::num::rk4` when the

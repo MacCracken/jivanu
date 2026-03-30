@@ -11,7 +11,8 @@ jivanu/
 ├── pharmacokinetics.rs    — IV/oral PK, two-compartment, AUC, half-life
 ├── biofilm.rs             — Formation stages, quorum sensing, diffusion
 ├── resistance.rs          — Kill curves, MIC, FIC, checkerboard, combinations
-├── taxonomy.rs            — Domain, Gram stain, morphology, oxygen
+├── bridge.rs              — PK→resistance time-kill, PK/PD indices, multi-dose
+├── taxonomy.rs            — Domain, Gram stain, morphology, oxygen, trait queries
 └── error.rs               — JivanuError enum
 ```
 

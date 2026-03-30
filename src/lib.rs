@@ -33,6 +33,7 @@
 #![warn(missing_docs)]
 
 pub mod biofilm;
+pub mod bridge;
 pub mod epidemiology;
 pub mod error;
 pub mod genetics;
