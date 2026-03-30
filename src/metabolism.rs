@@ -126,7 +126,7 @@ impl FermentationType {
 /// A metabolic reaction with stoichiometric coefficients.
 ///
 /// Negative coefficients are substrates (consumed), positive are products.
-/// The coefficient map keys are metabolite names.
+/// Each entry is a `(metabolite_name, coefficient)` pair.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Reaction {
     /// Reaction identifier.
@@ -178,7 +178,7 @@ impl MetabolicNetwork {
         for (j, rxn) in reactions.iter().enumerate() {
             for (met, coeff) in &rxn.stoichiometry {
                 if let Some(&i) = met_index.get(met) {
-                    s_matrix[i][j] = *coeff;
+                    s_matrix[i][j] += *coeff;
                 }
             }
         }
@@ -480,6 +480,18 @@ mod tests {
         assert_eq!(back.n_metabolites(), net.n_metabolites());
         assert_eq!(back.n_reactions(), net.n_reactions());
         assert!((back.s_matrix[0][0] - net.s_matrix[0][0]).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_duplicate_metabolite_in_reaction() {
+        // If a metabolite appears twice, coefficients should accumulate
+        let net = MetabolicNetwork::from_reactions(vec![Reaction {
+            id: "test".into(),
+            stoichiometry: vec![("ATP".into(), 2.0), ("ATP".into(), 1.0)],
+            reversible: false,
+        }]);
+        let atp_idx = net.metabolites.iter().position(|m| m == "ATP").unwrap();
+        assert!((net.s_matrix[atp_idx][0] - 3.0).abs() < 1e-10);
     }
 
     #[test]

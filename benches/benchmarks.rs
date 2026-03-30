@@ -90,6 +90,25 @@ fn bench_competition_step(c: &mut Criterion) {
     });
 }
 
+fn bench_net_production(c: &mut Criterion) {
+    let net = jivanu::metabolism::MetabolicNetwork::from_reactions(vec![
+        jivanu::metabolism::Reaction {
+            id: "r1".into(),
+            stoichiometry: vec![("A".into(), -1.0), ("B".into(), 2.0), ("C".into(), 1.0)],
+            reversible: false,
+        },
+        jivanu::metabolism::Reaction {
+            id: "r2".into(),
+            stoichiometry: vec![("B".into(), -1.0), ("D".into(), 1.0)],
+            reversible: false,
+        },
+    ]);
+    let fluxes = [1.0, 2.0];
+    c.bench_function("metabolism/net_production", |b| {
+        b.iter(|| net.net_production(black_box(&fluxes)))
+    });
+}
+
 criterion_group!(
     benches,
     bench_monod,
@@ -101,5 +120,6 @@ criterion_group!(
     bench_fic_index,
     bench_kill_curve,
     bench_competition_step,
+    bench_net_production,
 );
 criterion_main!(benches);
