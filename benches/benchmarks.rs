@@ -45,6 +45,31 @@ fn bench_exponential_growth(c: &mut Criterion) {
     });
 }
 
+fn bench_translate_codon(c: &mut Criterion) {
+    c.bench_function("genetics/translate_codon_to_aa", |b| {
+        b.iter(|| jivanu::genetics::translate_codon_to_aa(black_box("ATG")))
+    });
+}
+
+fn bench_fic_index(c: &mut Criterion) {
+    c.bench_function("resistance/fic_index", |b| {
+        b.iter(|| {
+            jivanu::resistance::fic_index(
+                black_box(0.25),
+                black_box(1.0),
+                black_box(0.25),
+                black_box(1.0),
+            )
+        })
+    });
+}
+
+fn bench_kill_curve(c: &mut Criterion) {
+    c.bench_function("resistance/kill_curve", |b| {
+        b.iter(|| jivanu::resistance::kill_curve(black_box(2.0), black_box(1.0), black_box(1.0)))
+    });
+}
+
 criterion_group!(
     benches,
     bench_monod,
@@ -52,5 +77,8 @@ criterion_group!(
     bench_sir_step,
     bench_gc_content,
     bench_exponential_growth,
+    bench_translate_codon,
+    bench_fic_index,
+    bench_kill_curve,
 );
 criterion_main!(benches);

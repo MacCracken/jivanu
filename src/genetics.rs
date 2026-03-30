@@ -235,10 +235,11 @@ impl AminoAcid {
         }
     }
 
-    /// Average molecular weight in daltons (Da).
+    /// Average molecular weight of the free amino acid in daltons (Da).
     ///
-    /// Values are monoisotopic residue weights (amino acid minus water)
-    /// from the NIST Chemistry WebBook / UniProt reference data.
+    /// Values from standard biochemistry references (NIST / UniProt).
+    /// For peptide mass calculation, subtract 18.015 Da (water) per
+    /// peptide bond formed.
     /// Stop returns 0.0.
     #[inline]
     #[must_use]
@@ -320,6 +321,10 @@ pub enum ChargeClass {
 
 impl AminoAcid {
     /// Side-chain charge class at physiological pH (~7.4).
+    ///
+    /// Histidine (pKa ~6.0) is classified as positive because it is
+    /// partially protonated at pH 7.4 and its charge state is
+    /// biologically significant for enzyme catalysis.
     #[inline]
     #[must_use]
     pub const fn charge_class(self) -> ChargeClass {
@@ -434,6 +439,7 @@ pub enum GeneTransferMechanism {
 /// # Errors
 ///
 /// Returns error if the codon is not exactly 3 valid DNA bases.
+#[inline]
 #[must_use = "returns the amino acid without side effects"]
 pub fn translate_codon_to_aa(codon: &str) -> Result<AminoAcid> {
     if codon.len() != 3 {
@@ -503,6 +509,7 @@ pub fn translate_codon_to_aa(codon: &str) -> Result<AminoAcid> {
 /// # Errors
 ///
 /// Returns error if the codon is not exactly 3 valid DNA bases.
+#[inline]
 #[must_use = "returns the amino acid without side effects"]
 pub fn translate_codon(codon: &str) -> Result<char> {
     translate_codon_to_aa(codon).map(|aa| aa.one_letter())
