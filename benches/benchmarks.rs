@@ -109,6 +109,26 @@ fn bench_net_production(c: &mut Criterion) {
     });
 }
 
+fn bench_iv_bolus(c: &mut Criterion) {
+    c.bench_function("pharmacokinetics/iv_bolus", |b| {
+        b.iter(|| {
+            jivanu::pharmacokinetics::iv_bolus_concentration(
+                black_box(500.0),
+                black_box(50.0),
+                black_box(0.1),
+                black_box(2.0),
+            )
+        })
+    });
+}
+
+fn bench_reverse_complement(c: &mut Criterion) {
+    let dna = "ATGCATGCATGCATGCATGCATGCATGCATGC";
+    c.bench_function("genetics/reverse_complement_32bp", |b| {
+        b.iter(|| jivanu::genetics::reverse_complement(black_box(dna)))
+    });
+}
+
 criterion_group!(
     benches,
     bench_monod,
@@ -121,5 +141,7 @@ criterion_group!(
     bench_kill_curve,
     bench_competition_step,
     bench_net_production,
+    bench_iv_bolus,
+    bench_reverse_complement,
 );
 criterion_main!(benches);

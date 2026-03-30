@@ -568,8 +568,9 @@ pub fn reverse_complement(dna: &str) -> Result<String> {
         };
         result.push(comp);
     }
-    // Safe: all bytes are ASCII
-    Ok(unsafe { String::from_utf8_unchecked(result) })
+    // All output bytes are ASCII (A, T, G, C), so this cannot fail.
+    String::from_utf8(result)
+        .map_err(|e| JivanuError::ComputationError(format!("internal error: invalid UTF-8: {e}")))
 }
 
 /// Translate a DNA coding sequence (open reading frame) to a protein sequence.

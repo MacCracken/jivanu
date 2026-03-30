@@ -81,6 +81,7 @@ pub fn iv_bolus_concentration(dose: f64, v_d: f64, k_e: f64, t: f64) -> Result<f
 /// # Errors
 ///
 /// Returns error if parameters are invalid or `k_a == k_e`.
+#[inline]
 #[must_use = "returns the plasma concentration without side effects"]
 pub fn oral_concentration(
     dose: f64,
@@ -92,6 +93,11 @@ pub fn oral_concentration(
 ) -> Result<f64> {
     validate_positive(dose, "dose")?;
     validate_positive(bioavailability, "bioavailability")?;
+    if bioavailability > 1.0 {
+        return Err(JivanuError::ComputationError(
+            "bioavailability must be in (0, 1]".into(),
+        ));
+    }
     validate_positive(v_d, "v_d")?;
     validate_positive(k_a, "k_a")?;
     validate_positive(k_e, "k_e")?;
