@@ -398,6 +398,75 @@ pub fn biofilm_kill_curve(
     resistance::kill_curve(concentration, effective_mic, kill_rate)
 }
 
+/// Post-antibiotic effect (PAE): delayed regrowth time after drug removal.
+///
+/// After antibiotic exposure ceases, surviving bacteria remain growth-
+/// suppressed for a duration proportional to the peak exposure.
+///
+/// `PAE = C × ln(Cmax / MIC)` hours, where C is a drug-class constant.
+///
+/// Typical C values: aminoglycosides ~1.5, fluoroquinolones ~1.0,
+/// beta-lactams ~0.5.
+///
+/// Returns the PAE duration in hours. Returns 0 if Cmax ≤ MIC.
+///
+/// Reference: Craig (1993) Clin Infect Dis 17:S235-S243.
+///
+/// # Errors
+///
+/// Returns error if parameters are invalid.
+#[inline]
+#[must_use = "returns the PAE duration without side effects"]
+pub fn post_antibiotic_effect(cmax: f64, mic: f64, pae_constant: f64) -> Result<f64> {
+    validate_non_negative(cmax, "cmax")?;
+    validate_positive(mic, "mic")?;
+    validate_non_negative(pae_constant, "pae_constant")?;
+    if cmax <= mic {
+        return Ok(0.0);
+    }
+    Ok(pae_constant * (cmax / mic).ln())
+}
+
+/// Time-kill ODE: bacterial population dynamics under antibiotic exposure.
+///
+/// `dN/dt = k_growth × N × (1 - N/K) - k_kill × Emax(C) × N`
+///
+/// Combines logistic growth with Emax-driven killing. Uses the Hill/Emax
+/// model for concentration-dependent bactericidal effect.
+///
+/// Returns the population after one time step.
+///
+/// # Errors
+///
+/// Returns error if parameters are invalid.
+#[must_use = "returns the population without side effects"]
+#[allow(clippy::too_many_arguments)]
+pub fn time_kill_ode_step(
+    population: f64,
+    capacity: f64,
+    growth_rate: f64,
+    concentration: f64,
+    e_max: f64,
+    ec50: f64,
+    hill_n: f64,
+    dt: f64,
+) -> Result<f64> {
+    validate_non_negative(population, "population")?;
+    validate_positive(capacity, "capacity")?;
+    validate_non_negative(growth_rate, "growth_rate")?;
+    validate_non_negative(concentration, "concentration")?;
+    validate_non_negative(e_max, "e_max")?;
+    validate_positive(ec50, "ec50")?;
+    validate_positive(hill_n, "hill_n")?;
+    validate_positive(dt, "dt")?;
+
+    let kill_effect = crate::metabolism::emax_model(concentration, e_max, ec50, hill_n)?;
+    let growth = growth_rate * population * (1.0 - population / capacity);
+    let killing = kill_effect * population;
+    let dn = growth - killing;
+    Ok((population + dn * dt).max(0.0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -578,6 +647,59 @@ mod tests {
         let dispersal =
             biofilm_kill_curve(5.0, 1.0, 1.0, biofilm::BiofilmStage::Dispersal).unwrap();
         assert!((planktonic - dispersal).abs() < 1e-10);
+    }
+
+    // --- PAE + time-kill ODE tests ---
+
+    #[test]
+    fn test_pae_above_mic() {
+        let pae = post_antibiotic_effect(10.0, 2.0, 1.0).unwrap();
+        // PAE = 1.0 * ln(10/2) = ln(5) ≈ 1.609
+        assert!((pae - 5.0_f64.ln()).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_pae_below_mic() {
+        let pae = post_antibiotic_effect(1.0, 2.0, 1.0).unwrap();
+        assert!((pae - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_time_kill_ode_growth_no_drug() {
+        // No drug → pure logistic growth
+        let n = time_kill_ode_step(100.0, 1000.0, 0.5, 0.0, 1.0, 5.0, 1.0, 0.1).unwrap();
+        assert!(n > 100.0, "should grow without drug");
+    }
+
+    #[test]
+    fn test_time_kill_ode_high_drug() {
+        // High drug concentration → population declines
+        let n = time_kill_ode_step(1000.0, 10000.0, 0.5, 100.0, 5.0, 5.0, 2.0, 0.1).unwrap();
+        assert!(n < 1000.0, "should decline under heavy drug");
+    }
+
+    #[test]
+    fn test_time_kill_ode_no_growth() {
+        // No growth, no drug → no change
+        let n = time_kill_ode_step(100.0, 1000.0, 0.0, 0.0, 1.0, 5.0, 1.0, 0.1).unwrap();
+        assert!((n - 100.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_oral_time_kill_params_serde_roundtrip() {
+        let params = OralTimeKillParams {
+            dose: 500.0,
+            bioavailability: 0.8,
+            v_d: 50.0,
+            k_a: 1.0,
+            k_e: 0.1,
+            mic: 5.0,
+            kill_rate: 1.0,
+        };
+        let json = serde_json::to_string(&params).unwrap();
+        let back: OralTimeKillParams = serde_json::from_str(&json).unwrap();
+        assert!((params.dose - back.dose).abs() < 1e-10);
+        assert!((params.bioavailability - back.bioavailability).abs() < 1e-10);
     }
 
     #[test]

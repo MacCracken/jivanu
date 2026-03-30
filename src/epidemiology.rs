@@ -639,6 +639,19 @@ mod tests {
         assert!((state.e - back.e).abs() < 1e-10);
     }
 
+    #[test]
+    fn test_seir_params_serde_roundtrip() {
+        let params = SeirParams {
+            beta: 0.5,
+            sigma: 0.2,
+            gamma: 0.1,
+            dt: 0.01,
+        };
+        let json = serde_json::to_string(&params).unwrap();
+        let back: SeirParams = serde_json::from_str(&json).unwrap();
+        assert!((params.sigma - back.sigma).abs() < 1e-10);
+    }
+
     /// With RK4, conservation should hold to near machine precision even
     /// with a coarse time step. With Euler, it drifts.
     #[test]

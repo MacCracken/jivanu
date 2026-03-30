@@ -41,6 +41,7 @@ pub mod growth;
 pub mod metabolism;
 pub mod pharmacokinetics;
 pub mod resistance;
+pub mod stochastic;
 pub mod taxonomy;
 
 pub use error::JivanuError;

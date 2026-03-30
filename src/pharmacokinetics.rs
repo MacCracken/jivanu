@@ -295,13 +295,17 @@ fn two_compartment_step_inner(
 }
 
 /// Plasma concentration from a two-compartment state.
+///
+/// `C_plasma = A_central / V_c`
+///
+/// # Errors
+///
+/// Returns error if `v_c` is non-positive.
 #[inline]
-#[must_use]
-pub fn plasma_concentration(state: &TwoCompartmentState, v_c: f64) -> f64 {
-    if v_c <= 0.0 {
-        return 0.0;
-    }
-    state.central / v_c
+#[must_use = "returns the plasma concentration without side effects"]
+pub fn plasma_concentration(state: &TwoCompartmentState, v_c: f64) -> Result<f64> {
+    validate_positive(v_c, "v_c")?;
+    Ok(state.central / v_c)
 }
 
 #[cfg(test)]
@@ -491,8 +495,17 @@ mod tests {
             central: 500.0,
             peripheral: 100.0,
         };
-        let c = plasma_concentration(&state, 50.0);
+        let c = plasma_concentration(&state, 50.0).unwrap();
         assert!((c - 10.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_plasma_concentration_invalid_vc() {
+        let state = TwoCompartmentState {
+            central: 500.0,
+            peripheral: 0.0,
+        };
+        assert!(plasma_concentration(&state, 0.0).is_err());
     }
 
     #[test]

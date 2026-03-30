@@ -273,6 +273,309 @@ fn competition_step_inner(
     })
 }
 
+/// Baranyi-Roberts growth model with explicit lag phase.
+///
+/// Uses the commonly applied three-parameter form:
+/// `N(t) = N_max / (1 + ((N_max/N_0) - 1) × e^(-μ_max × (t - lag)))`
+/// for `t > lag`, and `N(t) = N_0` for `t ≤ lag`.
+///
+/// Reference: Baranyi & Roberts (1994) Int J Food Microbiol 23:277-294.
+///
+/// # Errors
+///
+/// Returns error if parameters are invalid.
+#[inline]
+#[must_use = "returns the population without side effects"]
+pub fn baranyi_roberts(n0: f64, n_max: f64, mu_max: f64, lag: f64, t: f64) -> Result<f64> {
+    validate_positive(n0, "n0")?;
+    validate_positive(n_max, "n_max")?;
+    validate_positive(mu_max, "mu_max")?;
+    validate_non_negative(lag, "lag")?;
+    validate_non_negative(t, "t")?;
+
+    if t <= lag {
+        return Ok(n0);
+    }
+    let t_eff = t - lag;
+    let ratio = (n_max - n0) / n0;
+    Ok(n_max / (1.0 + ratio * (-mu_max * t_eff).exp()))
+}
+
+/// Gompertz growth model.
+///
+/// `ln(N/N_0) = A × exp(-exp((μ_max × e / A) × (lag - t) + 1))`
+///
+/// where `A = ln(N_max / N_0)`.
+///
+/// Returns the population at time t.
+///
+/// Reference: Zwietering et al. (1990) Appl Environ Microbiol 56:1875-1881.
+///
+/// # Errors
+///
+/// Returns error if parameters are invalid.
+#[inline]
+#[must_use = "returns the population without side effects"]
+pub fn gompertz(n0: f64, n_max: f64, mu_max: f64, lag: f64, t: f64) -> Result<f64> {
+    validate_positive(n0, "n0")?;
+    validate_positive(n_max, "n_max")?;
+    validate_positive(mu_max, "mu_max")?;
+    validate_non_negative(lag, "lag")?;
+    validate_non_negative(t, "t")?;
+
+    let a = (n_max / n0).ln();
+    let e = core::f64::consts::E;
+    let exponent = (mu_max * e / a) * (lag - t) + 1.0;
+    let ln_ratio = a * (-exponent.exp()).exp();
+    Ok(n0 * ln_ratio.exp())
+}
+
+/// Temperature growth rate modifier (Ratkowsky square-root model).
+///
+/// `√μ = b × (T - T_min)` → `μ = b² × (T - T_min)²`
+///
+/// Valid for `T > T_min`. Returns 0 at or below `T_min`.
+///
+/// Reference: Ratkowsky et al. (1982) J Bacteriol 149:1-5.
+///
+/// # Errors
+///
+/// Returns error if parameters are invalid.
+#[inline]
+#[must_use = "returns the growth rate without side effects"]
+pub fn ratkowsky_temperature(b: f64, t_celsius: f64, t_min: f64) -> Result<f64> {
+    validate_positive(b, "b")?;
+    validate_finite(t_celsius, "t_celsius")?;
+    validate_finite(t_min, "t_min")?;
+
+    if t_celsius <= t_min {
+        return Ok(0.0);
+    }
+    let diff = t_celsius - t_min;
+    Ok(b * b * diff * diff)
+}
+
+/// Cardinal temperature model (Rosso).
+///
+/// Returns a growth modifier in [0, 1] based on temperature.
+/// Growth is zero outside [T_min, T_max], optimal at T_opt.
+///
+/// Reference: Rosso et al. (1993) J Theor Biol 162:447-463.
+///
+/// # Errors
+///
+/// Returns error if cardinal temperatures are not ordered T_min < T_opt < T_max.
+#[must_use = "returns the growth rate modifier without side effects"]
+pub fn cardinal_temperature(t_celsius: f64, t_min: f64, t_opt: f64, t_max: f64) -> Result<f64> {
+    validate_finite(t_celsius, "t_celsius")?;
+    validate_finite(t_min, "t_min")?;
+    validate_finite(t_opt, "t_opt")?;
+    validate_finite(t_max, "t_max")?;
+
+    if t_min >= t_opt || t_opt >= t_max {
+        return Err(JivanuError::ComputationError(
+            "cardinal temperatures must satisfy T_min < T_opt < T_max".into(),
+        ));
+    }
+
+    if t_celsius <= t_min || t_celsius >= t_max {
+        return Ok(0.0);
+    }
+
+    let num = (t_celsius - t_max) * (t_celsius - t_min).powi(2);
+    let denom = (t_opt - t_min)
+        * ((t_opt - t_min) * (t_celsius - t_opt)
+            - (t_opt - t_max) * (t_opt + t_min - 2.0 * t_celsius));
+    Ok((num / denom).clamp(0.0, 1.0))
+}
+
+/// Cardinal pH model.
+///
+/// Returns a growth modifier in [0, 1] based on pH.
+/// Growth is zero outside [pH_min, pH_max], optimal at pH_opt.
+///
+/// Reference: Rosso et al. (1995) Appl Environ Microbiol.
+///
+/// # Errors
+///
+/// Returns error if cardinal pH values are not ordered.
+#[must_use = "returns the pH growth modifier without side effects"]
+pub fn cardinal_ph(ph: f64, ph_min: f64, ph_opt: f64, ph_max: f64) -> Result<f64> {
+    validate_finite(ph, "ph")?;
+    validate_finite(ph_min, "ph_min")?;
+    validate_finite(ph_opt, "ph_opt")?;
+    validate_finite(ph_max, "ph_max")?;
+
+    if ph_min >= ph_opt || ph_opt >= ph_max {
+        return Err(JivanuError::ComputationError(
+            "cardinal pH must satisfy pH_min < pH_opt < pH_max".into(),
+        ));
+    }
+
+    if ph <= ph_min || ph >= ph_max {
+        return Ok(0.0);
+    }
+
+    let num = (ph - ph_min) * (ph - ph_max);
+    let denom = num - (ph - ph_opt).powi(2);
+    if denom.abs() < 1e-15 {
+        return Ok(0.0);
+    }
+    Ok((num / denom).clamp(0.0, 1.0))
+}
+
+/// Herbert-Pirt maintenance energy: specific substrate consumption rate.
+///
+/// `q_s = μ / Y_true + m_s`
+///
+/// Reference: Pirt (1965) Proc R Soc Lond B 163:224-231.
+///
+/// # Errors
+///
+/// Returns error if parameters are invalid.
+#[inline]
+#[must_use = "returns the specific substrate consumption rate without side effects"]
+pub fn maintenance_substrate_rate(mu: f64, y_true: f64, m_s: f64) -> Result<f64> {
+    validate_non_negative(mu, "mu")?;
+    validate_positive(y_true, "y_true")?;
+    validate_non_negative(m_s, "m_s")?;
+    Ok(mu / y_true + m_s)
+}
+
+/// Apparent yield accounting for maintenance energy.
+///
+/// `Y_app = μ / (μ/Y_true + m_s)`
+///
+/// # Errors
+///
+/// Returns error if μ is zero or parameters are invalid.
+#[inline]
+#[must_use = "returns the apparent yield without side effects"]
+pub fn apparent_yield(mu: f64, y_true: f64, m_s: f64) -> Result<f64> {
+    validate_positive(mu, "mu")?;
+    validate_positive(y_true, "y_true")?;
+    validate_non_negative(m_s, "m_s")?;
+    let q_s = mu / y_true + m_s;
+    Ok(mu / q_s)
+}
+
+/// Tilman R* (minimum resource requirement) for a species.
+///
+/// `R* = K_s × D / (μ_max - D)`
+///
+/// The species with the lowest R* wins competition for a single limiting
+/// resource in a chemostat. This is the resource-ratio theory of competition.
+///
+/// Reference: Tilman (1982) "Resource Competition and Community Structure".
+///
+/// # Errors
+///
+/// Returns error if dilution rate exceeds μ_max.
+#[inline]
+#[must_use = "returns the R* value without side effects"]
+pub fn tilman_r_star(mu_max: f64, k_s: f64, dilution_rate: f64) -> Result<f64> {
+    validate_positive(mu_max, "mu_max")?;
+    validate_positive(k_s, "k_s")?;
+    validate_positive(dilution_rate, "dilution_rate")?;
+    if dilution_rate >= mu_max {
+        return Err(JivanuError::SimulationFailed(
+            "dilution rate must be less than mu_max".into(),
+        ));
+    }
+    Ok(k_s * dilution_rate / (mu_max - dilution_rate))
+}
+
+/// Predict the winner of two-species resource competition (Tilman R* theory).
+///
+/// The species with the lower R* excludes the other when competing for
+/// a single limiting resource. Returns `true` if species 1 wins.
+///
+/// # Errors
+///
+/// Returns error if parameters are invalid.
+#[must_use = "returns whether species 1 wins without side effects"]
+pub fn r_star_competition_winner(
+    mu_max_1: f64,
+    k_s_1: f64,
+    mu_max_2: f64,
+    k_s_2: f64,
+    dilution_rate: f64,
+) -> Result<bool> {
+    let r1 = tilman_r_star(mu_max_1, k_s_1, dilution_rate)?;
+    let r2 = tilman_r_star(mu_max_2, k_s_2, dilution_rate)?;
+    Ok(r1 < r2)
+}
+
+/// Cross-feeding growth rate: species B grows on the byproduct of species A.
+///
+/// Models syntrophy where species A produces a metabolite at rate proportional
+/// to its growth, and species B consumes it via Monod kinetics.
+///
+/// `byproduct_conc = yield_ab × N_a × μ_a`
+/// `μ_b = μ_max_b × byproduct_conc / (K_s_b + byproduct_conc)`
+///
+/// Returns the specific growth rate of species B.
+///
+/// # Errors
+///
+/// Returns error if parameters are invalid.
+#[must_use = "returns the cross-feeding growth rate without side effects"]
+pub fn cross_feeding_growth(
+    n_a: f64,
+    mu_a: f64,
+    yield_ab: f64,
+    mu_max_b: f64,
+    k_s_b: f64,
+) -> Result<f64> {
+    validate_non_negative(n_a, "n_a")?;
+    validate_non_negative(mu_a, "mu_a")?;
+    validate_non_negative(yield_ab, "yield_ab")?;
+    validate_positive(mu_max_b, "mu_max_b")?;
+    validate_positive(k_s_b, "k_s_b")?;
+
+    let byproduct = yield_ab * n_a * mu_a;
+    monod_kinetics(byproduct, mu_max_b, k_s_b)
+}
+
+/// Multi-species chemostat: steady-state substrate concentration.
+///
+/// With N species competing for a single substrate in a chemostat,
+/// at steady state only the species with the lowest R* persists
+/// (competitive exclusion). This returns the steady-state substrate
+/// level, which equals the winner's R*.
+///
+/// Returns `(winning_species_index, steady_state_substrate)`.
+///
+/// # Errors
+///
+/// Returns error if any species would wash out at the given dilution rate.
+#[must_use = "returns the chemostat outcome without side effects"]
+pub fn multi_species_chemostat(
+    mu_max: &[f64],
+    k_s: &[f64],
+    dilution_rate: f64,
+) -> Result<(usize, f64)> {
+    if mu_max.len() != k_s.len() || mu_max.is_empty() {
+        return Err(JivanuError::ComputationError(
+            "mu_max and k_s must have the same non-zero length".into(),
+        ));
+    }
+    validate_positive(dilution_rate, "dilution_rate")?;
+
+    let mut best_idx = 0;
+    let mut best_r_star = f64::MAX;
+
+    for i in 0..mu_max.len() {
+        let r = tilman_r_star(mu_max[i], k_s[i], dilution_rate)?;
+        if r < best_r_star {
+            best_r_star = r;
+            best_idx = i;
+        }
+    }
+
+    Ok((best_idx, best_r_star))
+}
+
 /// Stochastic birth-death event from the Gillespie algorithm.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct GillespieEvent {
@@ -896,5 +1199,181 @@ mod tests {
         let back: GillespieEvent = serde_json::from_str(&json).unwrap();
         assert!((ev.time - back.time).abs() < 1e-10);
         assert_eq!(ev.population, back.population);
+    }
+
+    // --- Baranyi-Roberts / Gompertz tests ---
+
+    #[test]
+    fn test_baranyi_roberts_lag_phase() {
+        // During lag, population stays at N0
+        let n = baranyi_roberts(100.0, 1e9, 1.0, 2.0, 1.0).unwrap();
+        assert!((n - 100.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_baranyi_roberts_after_lag() {
+        let n = baranyi_roberts(100.0, 1e9, 1.0, 2.0, 5.0).unwrap();
+        assert!(n > 100.0, "should grow after lag");
+    }
+
+    #[test]
+    fn test_baranyi_roberts_approaches_nmax() {
+        let n = baranyi_roberts(100.0, 1e6, 1.0, 1.0, 100.0).unwrap();
+        assert!((n - 1e6).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_gompertz_at_t0() {
+        // With long lag, Gompertz at t=0 ≈ N0
+        let n = gompertz(100.0, 1e9, 0.5, 10.0, 0.0).unwrap();
+        assert!((90.0..=110.0).contains(&n), "n at t=0 = {n}");
+    }
+
+    #[test]
+    fn test_gompertz_grows() {
+        let n0 = gompertz(100.0, 1e6, 1.0, 1.0, 0.0).unwrap();
+        let n10 = gompertz(100.0, 1e6, 1.0, 1.0, 10.0).unwrap();
+        assert!(n10 > n0, "should grow over time");
+    }
+
+    #[test]
+    fn test_gompertz_approaches_nmax() {
+        let n = gompertz(100.0, 1e6, 1.0, 1.0, 100.0).unwrap();
+        assert!((n - 1e6).abs() / 1e6 < 0.01);
+    }
+
+    // --- Temperature / pH tests ---
+
+    #[test]
+    fn test_ratkowsky_below_tmin() {
+        let mu = ratkowsky_temperature(0.04, 0.0, 5.0).unwrap();
+        assert!((mu - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_ratkowsky_above_tmin() {
+        let mu = ratkowsky_temperature(0.04, 37.0, 5.0).unwrap();
+        // b=0.04, T-Tmin=32 → μ = 0.0016 * 1024 = 1.6384
+        assert!((mu - 0.04_f64.powi(2) * 32.0_f64.powi(2)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_cardinal_temperature_at_optimum() {
+        let ctm = cardinal_temperature(37.0, 5.0, 37.0, 45.0).unwrap();
+        assert!(
+            (ctm - 1.0).abs() < 1e-6,
+            "should be 1.0 at T_opt, got {ctm}"
+        );
+    }
+
+    #[test]
+    fn test_cardinal_temperature_at_extremes() {
+        assert!((cardinal_temperature(5.0, 5.0, 37.0, 45.0).unwrap() - 0.0).abs() < 1e-10);
+        assert!((cardinal_temperature(45.0, 5.0, 37.0, 45.0).unwrap() - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_cardinal_temperature_bad_order() {
+        assert!(cardinal_temperature(37.0, 37.0, 5.0, 45.0).is_err());
+    }
+
+    #[test]
+    fn test_cardinal_ph_at_optimum() {
+        let cpm = cardinal_ph(7.0, 4.0, 7.0, 9.0).unwrap();
+        assert!(
+            (cpm - 1.0).abs() < 1e-6,
+            "should be 1.0 at pH_opt, got {cpm}"
+        );
+    }
+
+    #[test]
+    fn test_cardinal_ph_at_extremes() {
+        assert!((cardinal_ph(4.0, 4.0, 7.0, 9.0).unwrap() - 0.0).abs() < 1e-10);
+        assert!((cardinal_ph(9.0, 4.0, 7.0, 9.0).unwrap() - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_cardinal_ph_bad_order() {
+        assert!(cardinal_ph(7.0, 7.0, 4.0, 9.0).is_err());
+    }
+
+    // --- Maintenance energy tests ---
+
+    #[test]
+    fn test_maintenance_substrate_rate() {
+        // μ=0.5, Y_true=0.5, m_s=0.1 → q_s = 0.5/0.5 + 0.1 = 1.1
+        let q_s = maintenance_substrate_rate(0.5, 0.5, 0.1).unwrap();
+        assert!((q_s - 1.1).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_maintenance_zero_growth() {
+        // At μ=0, only maintenance: q_s = m_s
+        let q_s = maintenance_substrate_rate(0.0, 0.5, 0.1).unwrap();
+        assert!((q_s - 0.1).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_apparent_yield_no_maintenance() {
+        // m_s=0 → Y_app = Y_true
+        let y_app = apparent_yield(0.5, 0.4, 0.0).unwrap();
+        assert!((y_app - 0.4).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_apparent_yield_with_maintenance() {
+        // With maintenance, Y_app < Y_true
+        let y_app = apparent_yield(0.5, 0.4, 0.1).unwrap();
+        assert!(y_app < 0.4);
+        assert!(y_app > 0.0);
+    }
+
+    // --- Tilman R* / ecology tests ---
+
+    #[test]
+    fn test_tilman_r_star() {
+        // Same formula as chemostat steady-state substrate
+        let r = tilman_r_star(1.0, 0.5, 0.2).unwrap();
+        assert!((r - 0.5 * 0.2 / (1.0 - 0.2)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_tilman_r_star_washout() {
+        assert!(tilman_r_star(0.5, 0.5, 0.6).is_err());
+    }
+
+    #[test]
+    fn test_r_star_winner() {
+        // Species 1 has lower K_s → lower R* → wins
+        let wins = r_star_competition_winner(1.0, 0.1, 1.0, 0.5, 0.2).unwrap();
+        assert!(wins, "species 1 (lower K_s) should win");
+    }
+
+    #[test]
+    fn test_cross_feeding_no_producer() {
+        // N_a=0 → no byproduct → no growth for B
+        let mu_b = cross_feeding_growth(0.0, 0.5, 0.1, 1.0, 0.5).unwrap();
+        assert!((mu_b - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_cross_feeding_with_producer() {
+        let mu_b = cross_feeding_growth(1000.0, 0.5, 0.1, 1.0, 0.5).unwrap();
+        assert!(mu_b > 0.0, "B should grow on A's byproduct");
+    }
+
+    #[test]
+    fn test_multi_species_chemostat() {
+        // 3 species, species 2 has lowest K_s → wins
+        let (winner, r_star) =
+            multi_species_chemostat(&[1.0, 1.0, 1.0], &[0.5, 0.1, 0.3], 0.2).unwrap();
+        assert_eq!(winner, 1, "species with lowest K_s should win");
+        let expected = tilman_r_star(1.0, 0.1, 0.2).unwrap();
+        assert!((r_star - expected).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_multi_species_chemostat_empty() {
+        assert!(multi_species_chemostat(&[], &[], 0.2).is_err());
     }
 }
