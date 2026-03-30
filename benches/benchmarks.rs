@@ -129,6 +129,66 @@ fn bench_reverse_complement(c: &mut Criterion) {
     });
 }
 
+fn bench_sirs_step(c: &mut Criterion) {
+    let state = jivanu::epidemiology::SirsState {
+        s: 0.8,
+        i: 0.1,
+        r: 0.1,
+    };
+    let params = jivanu::epidemiology::SirsParams {
+        beta: 0.5,
+        gamma: 0.1,
+        delta: 0.05,
+        nu: 0.02,
+        dt: 0.01,
+    };
+    c.bench_function("epidemiology/sirs_step", |b| {
+        b.iter(|| jivanu::epidemiology::sirs_step(black_box(&state), black_box(&params)))
+    });
+}
+
+fn bench_oral_concentration(c: &mut Criterion) {
+    c.bench_function("pharmacokinetics/oral_concentration", |b| {
+        b.iter(|| {
+            jivanu::pharmacokinetics::oral_concentration(
+                black_box(500.0),
+                black_box(0.8),
+                black_box(50.0),
+                black_box(1.0),
+                black_box(0.1),
+                black_box(3.0),
+            )
+        })
+    });
+}
+
+fn bench_biofilm_kill_curve(c: &mut Criterion) {
+    c.bench_function("bridge/biofilm_kill_curve", |b| {
+        b.iter(|| {
+            jivanu::bridge::biofilm_kill_curve(
+                black_box(5.0),
+                black_box(1.0),
+                black_box(1.0),
+                black_box(jivanu::biofilm::BiofilmStage::Maturation),
+            )
+        })
+    });
+}
+
+fn bench_gillespie(c: &mut Criterion) {
+    c.bench_function("growth/gillespie_birth_death_100", |b| {
+        b.iter(|| {
+            jivanu::growth::gillespie_birth_death(
+                black_box(100),
+                black_box(0.5),
+                black_box(0.1),
+                black_box(1.0),
+                black_box(42),
+            )
+        })
+    });
+}
+
 criterion_group!(
     benches,
     bench_monod,
@@ -143,5 +203,9 @@ criterion_group!(
     bench_net_production,
     bench_iv_bolus,
     bench_reverse_complement,
+    bench_sirs_step,
+    bench_oral_concentration,
+    bench_biofilm_kill_curve,
+    bench_gillespie,
 );
 criterion_main!(benches);

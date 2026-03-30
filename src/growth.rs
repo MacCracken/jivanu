@@ -273,6 +273,99 @@ fn competition_step_inner(
     })
 }
 
+/// Stochastic birth-death event from the Gillespie algorithm.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct GillespieEvent {
+    /// Time at which the event occurred.
+    pub time: f64,
+    /// Population after the event.
+    pub population: u64,
+}
+
+/// Run a Gillespie stochastic simulation for a simple birth-death process.
+///
+/// Implements the direct method (Gillespie, 1977) for a population with:
+/// - Birth rate: `birth_rate × N`
+/// - Death rate: `death_rate × N`
+///
+/// Produces exact stochastic trajectories for discrete populations.
+/// Uses a simple linear congruential RNG seeded by `seed`.
+///
+/// # Arguments
+///
+/// - `n0` — initial population count
+/// - `birth_rate` — per-capita birth rate (1/time)
+/// - `death_rate` — per-capita death rate (1/time)
+/// - `t_end` — simulation end time
+/// - `seed` — RNG seed for reproducibility
+///
+/// # Errors
+///
+/// Returns error if rates are negative or `t_end` is non-positive.
+#[must_use = "returns the stochastic trajectory without side effects"]
+pub fn gillespie_birth_death(
+    n0: u64,
+    birth_rate: f64,
+    death_rate: f64,
+    t_end: f64,
+    seed: u64,
+) -> Result<Vec<GillespieEvent>> {
+    validate_non_negative(birth_rate, "birth_rate")?;
+    validate_non_negative(death_rate, "death_rate")?;
+    validate_positive(t_end, "t_end")?;
+
+    let mut events = Vec::new();
+    let mut t = 0.0;
+    let mut n = n0;
+    let mut rng_state = seed.wrapping_add(1); // avoid zero seed
+
+    events.push(GillespieEvent {
+        time: t,
+        population: n,
+    });
+
+    while t < t_end && n > 0 {
+        let total_rate = (birth_rate + death_rate) * n as f64;
+        if total_rate <= 0.0 {
+            break;
+        }
+
+        // Generate two uniform random numbers via LCG
+        rng_state = rng_state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1);
+        let u1 = (rng_state >> 33) as f64 / (1u64 << 31) as f64;
+        rng_state = rng_state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1);
+        let u2 = (rng_state >> 33) as f64 / (1u64 << 31) as f64;
+
+        // Time to next event (exponential distribution)
+        let u1_clamped = u1.max(1e-15); // avoid ln(0)
+        let dt = -(u1_clamped.ln()) / total_rate;
+        t += dt;
+
+        if t > t_end {
+            break;
+        }
+
+        // Determine event type
+        let birth_prob = birth_rate * n as f64 / total_rate;
+        if u2 < birth_prob {
+            n += 1; // birth
+        } else {
+            n -= 1; // death
+        }
+
+        events.push(GillespieEvent {
+            time: t,
+            population: n,
+        });
+    }
+
+    Ok(events)
+}
+
 /// N-strain Lotka-Volterra competition step.
 ///
 /// Generalizes two-strain competition to an arbitrary number of strains
@@ -723,5 +816,85 @@ mod tests {
         let json = serde_json::to_string(&params).unwrap();
         let back: CompetitionParams = serde_json::from_str(&json).unwrap();
         assert!((params.r1 - back.r1).abs() < 1e-10);
+    }
+
+    // --- Gillespie stochastic tests ---
+
+    #[test]
+    fn test_gillespie_pure_birth() {
+        // Only births: population should grow
+        let events = gillespie_birth_death(10, 1.0, 0.0, 1.0, 42).unwrap();
+        assert!(events.len() >= 2);
+        assert_eq!(events[0].population, 10);
+        assert!(events.last().unwrap().population > 10);
+    }
+
+    #[test]
+    fn test_gillespie_pure_death() {
+        // Only deaths: population should decline toward 0
+        let events = gillespie_birth_death(100, 0.0, 1.0, 10.0, 42).unwrap();
+        assert!(events.last().unwrap().population < 100);
+    }
+
+    #[test]
+    fn test_gillespie_extinction() {
+        // High death rate, small population: should go extinct
+        let events = gillespie_birth_death(5, 0.0, 10.0, 10.0, 42).unwrap();
+        assert_eq!(events.last().unwrap().population, 0);
+    }
+
+    #[test]
+    fn test_gillespie_reproducible() {
+        // Same seed → same trajectory
+        let a = gillespie_birth_death(50, 0.5, 0.1, 2.0, 123).unwrap();
+        let b = gillespie_birth_death(50, 0.5, 0.1, 2.0, 123).unwrap();
+        assert_eq!(a.len(), b.len());
+        for (ea, eb) in a.iter().zip(b.iter()) {
+            assert_eq!(ea.population, eb.population);
+            assert!((ea.time - eb.time).abs() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn test_gillespie_different_seeds_differ() {
+        let a = gillespie_birth_death(50, 0.5, 0.1, 5.0, 1).unwrap();
+        let b = gillespie_birth_death(50, 0.5, 0.1, 5.0, 999).unwrap();
+        // Very unlikely to produce identical trajectories
+        let same = a.len() == b.len()
+            && a.iter()
+                .zip(b.iter())
+                .all(|(ea, eb)| ea.population == eb.population);
+        assert!(
+            !same,
+            "different seeds should produce different trajectories"
+        );
+    }
+
+    #[test]
+    fn test_gillespie_zero_population() {
+        // Start at 0: nothing happens
+        let events = gillespie_birth_death(0, 1.0, 0.5, 1.0, 42).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].population, 0);
+    }
+
+    #[test]
+    fn test_gillespie_time_monotonic() {
+        let events = gillespie_birth_death(100, 0.5, 0.1, 5.0, 42).unwrap();
+        for i in 1..events.len() {
+            assert!(events[i].time >= events[i - 1].time);
+        }
+    }
+
+    #[test]
+    fn test_gillespie_event_serde_roundtrip() {
+        let ev = GillespieEvent {
+            time: 1.5,
+            population: 42,
+        };
+        let json = serde_json::to_string(&ev).unwrap();
+        let back: GillespieEvent = serde_json::from_str(&json).unwrap();
+        assert!((ev.time - back.time).abs() < 1e-10);
+        assert_eq!(ev.population, back.population);
     }
 }

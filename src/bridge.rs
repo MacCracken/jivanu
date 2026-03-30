@@ -6,8 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Result, validate_non_negative, validate_positive};
-use crate::pharmacokinetics;
-use crate::resistance;
+use crate::{biofilm, growth, pharmacokinetics, resistance};
 
 /// A single time point in a PK-driven time-kill simulation.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -307,6 +306,98 @@ pub fn steady_state_trough(dose: f64, v_d: f64, k_e: f64, tau: f64) -> Result<f6
     Ok(c0 * decay / (1.0 - decay))
 }
 
+/// Growth rate modifier from biofilm nutrient limitation.
+///
+/// Combines Monod kinetics with biofilm diffusion to compute an effective
+/// growth rate. Nutrient availability inside the biofilm is reduced by
+/// diffusion limitation through the matrix.
+///
+/// `μ_eff = μ_max × S_eff / (K_s + S_eff)`
+///
+/// where `S_eff = diffusivity × S_bulk / thickness` (flux-based approximation).
+///
+/// # Errors
+///
+/// Returns error if parameters are invalid.
+#[must_use = "returns the effective growth rate without side effects"]
+pub fn biofilm_limited_growth(
+    mu_max: f64,
+    k_s: f64,
+    substrate_bulk: f64,
+    biofilm_thickness: f64,
+    diffusivity: f64,
+) -> Result<f64> {
+    validate_positive(mu_max, "mu_max")?;
+    validate_positive(k_s, "k_s")?;
+    validate_non_negative(substrate_bulk, "substrate_bulk")?;
+    validate_positive(biofilm_thickness, "biofilm_thickness")?;
+    validate_positive(diffusivity, "diffusivity")?;
+
+    let flux = biofilm::diffusion_through_matrix(substrate_bulk, biofilm_thickness, diffusivity)?;
+    growth::monod_kinetics(flux, mu_max, k_s)
+}
+
+/// Growth rate multiplier based on biofilm maturation stage.
+///
+/// Biofilm stage affects growth rate:
+/// - Attachment: reduced (establishing, 0.5×)
+/// - Microcolony: near-normal (0.9×)
+/// - Maturation: reduced by diffusion limitation (0.6×)
+/// - Dispersal: maximal planktonic growth (1.0×)
+///
+/// Based on general biofilm physiology (Stewart & Franklin, 2008).
+#[inline]
+#[must_use]
+pub const fn biofilm_stage_growth_modifier(stage: biofilm::BiofilmStage) -> f64 {
+    match stage {
+        biofilm::BiofilmStage::Attachment => 0.5,
+        biofilm::BiofilmStage::Microcolony => 0.9,
+        biofilm::BiofilmStage::Maturation => 0.6,
+        biofilm::BiofilmStage::Dispersal => 1.0,
+    }
+}
+
+/// Antibiotic efficacy modifier within a biofilm.
+///
+/// Biofilms reduce antibiotic penetration, increasing the effective MIC.
+/// The MIC multiplier depends on maturation stage:
+/// - Attachment: 2× (early protection)
+/// - Microcolony: 10× (developing matrix)
+/// - Maturation: 100–1000× (full EPS matrix)
+/// - Dispersal: 1× (planktonic, full susceptibility)
+///
+/// Based on Mah & O'Toole (2001) Trends in Microbiology.
+#[inline]
+#[must_use]
+pub const fn biofilm_mic_multiplier(stage: biofilm::BiofilmStage) -> f64 {
+    match stage {
+        biofilm::BiofilmStage::Attachment => 2.0,
+        biofilm::BiofilmStage::Microcolony => 10.0,
+        biofilm::BiofilmStage::Maturation => 100.0,
+        biofilm::BiofilmStage::Dispersal => 1.0,
+    }
+}
+
+/// Kill curve adjusted for biofilm protection.
+///
+/// Applies the biofilm MIC multiplier to compute survival within a
+/// biofilm at a given maturation stage.
+///
+/// # Errors
+///
+/// Returns error if parameters are invalid.
+#[inline]
+#[must_use = "returns the biofilm-adjusted survival without side effects"]
+pub fn biofilm_kill_curve(
+    concentration: f64,
+    planktonic_mic: f64,
+    kill_rate: f64,
+    stage: biofilm::BiofilmStage,
+) -> Result<f64> {
+    let effective_mic = planktonic_mic * biofilm_mic_multiplier(stage);
+    resistance::kill_curve(concentration, effective_mic, kill_rate)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -439,6 +530,54 @@ mod tests {
         let c_short = steady_state_trough(500.0, 50.0, 0.1, 4.0).unwrap();
         let c_long = steady_state_trough(500.0, 50.0, 0.1, 12.0).unwrap();
         assert!(c_short > c_long);
+    }
+
+    // --- Biofilm-competition bridge tests ---
+
+    #[test]
+    fn test_biofilm_limited_growth() {
+        // Thick biofilm reduces effective substrate → lower growth rate
+        let thin = biofilm_limited_growth(1.0, 1.0, 10.0, 0.1, 0.5).unwrap();
+        let thick = biofilm_limited_growth(1.0, 1.0, 10.0, 1.0, 0.5).unwrap();
+        assert!(thick < thin, "thicker biofilm should limit growth more");
+    }
+
+    #[test]
+    fn test_biofilm_stage_growth_modifier() {
+        assert!(
+            (biofilm_stage_growth_modifier(biofilm::BiofilmStage::Dispersal) - 1.0).abs() < 1e-10
+        );
+        assert!(biofilm_stage_growth_modifier(biofilm::BiofilmStage::Maturation) < 1.0);
+        assert!(
+            biofilm_stage_growth_modifier(biofilm::BiofilmStage::Attachment)
+                < biofilm_stage_growth_modifier(biofilm::BiofilmStage::Microcolony)
+        );
+    }
+
+    #[test]
+    fn test_biofilm_mic_multiplier() {
+        assert!((biofilm_mic_multiplier(biofilm::BiofilmStage::Dispersal) - 1.0).abs() < 1e-10);
+        assert!(
+            biofilm_mic_multiplier(biofilm::BiofilmStage::Maturation)
+                > biofilm_mic_multiplier(biofilm::BiofilmStage::Microcolony)
+        );
+    }
+
+    #[test]
+    fn test_biofilm_kill_curve_protection() {
+        // Same concentration: mature biofilm survives better than planktonic
+        let planktonic = resistance::kill_curve(5.0, 1.0, 1.0).unwrap();
+        let biofilm_surv =
+            biofilm_kill_curve(5.0, 1.0, 1.0, biofilm::BiofilmStage::Maturation).unwrap();
+        assert!(biofilm_surv > planktonic, "biofilm should protect bacteria");
+    }
+
+    #[test]
+    fn test_biofilm_kill_curve_dispersal_equals_planktonic() {
+        let planktonic = resistance::kill_curve(5.0, 1.0, 1.0).unwrap();
+        let dispersal =
+            biofilm_kill_curve(5.0, 1.0, 1.0, biofilm::BiofilmStage::Dispersal).unwrap();
+        assert!((planktonic - dispersal).abs() < 1e-10);
     }
 
     #[test]
