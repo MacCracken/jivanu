@@ -176,6 +176,7 @@ pub enum CompetitionOutcome {
 ///
 /// Returns error if carrying capacities are non-positive or competition
 /// coefficients are negative.
+#[inline]
 #[must_use = "returns the competition outcome without side effects"]
 pub fn competition_outcome(params: &CompetitionParams) -> Result<CompetitionOutcome> {
     validate_positive(params.k1, "k1")?;
@@ -323,6 +324,9 @@ pub fn n_strain_competition_step(
         validate_non_negative(populations[i], "population")?;
         validate_positive(growth_rates[i], "growth_rate")?;
         validate_positive(carrying_capacities[i], "carrying_capacity")?;
+        for val in &alpha[i] {
+            validate_non_negative(*val, "alpha element")?;
+        }
     }
     validate_positive(dt, "dt")?;
 

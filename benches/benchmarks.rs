@@ -70,6 +70,26 @@ fn bench_kill_curve(c: &mut Criterion) {
     });
 }
 
+fn bench_competition_step(c: &mut Criterion) {
+    let state = jivanu::growth::TwoStrainState {
+        n1: 100.0,
+        n2: 50.0,
+    };
+    let params = jivanu::growth::CompetitionParams {
+        r1: 0.5,
+        r2: 0.4,
+        k1: 1000.0,
+        k2: 800.0,
+        alpha12: 0.6,
+        alpha21: 0.3,
+    };
+    c.bench_function("growth/competition_step", |b| {
+        b.iter(|| {
+            jivanu::growth::competition_step(black_box(&state), black_box(&params), black_box(0.1))
+        })
+    });
+}
+
 criterion_group!(
     benches,
     bench_monod,
@@ -80,5 +100,6 @@ criterion_group!(
     bench_translate_codon,
     bench_fic_index,
     bench_kill_curve,
+    bench_competition_step,
 );
 criterion_main!(benches);
