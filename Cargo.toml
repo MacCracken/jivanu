@@ -1,0 +1,49 @@
+[package]
+name = "jivanu"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "GPL-3.0-only"
+publish = false
+description = "Jivanu — microbiology engine for growth kinetics, metabolism, genetics, and epidemiology"
+homepage = "https://github.com/MacCracken/jivanu"
+repository = "https://github.com/MacCracken/jivanu"
+readme = "README.md"
+documentation = "https://docs.rs/jivanu"
+keywords = ["microbiology", "kinetics", "metabolism", "genetics", "epidemiology"]
+categories = ["science", "simulation"]
+exclude = [".claude/", ".github/", "docs/", "scripts/"]
+
+[features]
+default = ["std"]
+std = ["serde/std", "thiserror/std"]
+full = ["std", "logging", "hisab", "pramana", "kimiya"]
+logging = ["dep:tracing-subscriber"]
+hisab = ["dep:hisab"]
+pramana = ["dep:pramana"]
+kimiya = ["dep:kimiya"]
+
+[dependencies]
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+thiserror = { version = "2", default-features = false }
+tracing = { version = "0.1", default-features = false }
+
+# Optional
+hisab = { version = "1", optional = true }
+pramana = { version = "1", optional = true }
+kimiya = { version = "1", optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"], optional = true }
+
+[dev-dependencies]
+criterion = { version = "0.8", features = ["html_reports"] }
+serde_json = "1"
+
+[[bench]]
+name = "benchmarks"
+harness = false
+
+[[test]]
+name = "integration"
+
+[[example]]
+name = "basic"
