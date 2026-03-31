@@ -56,6 +56,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Net ATP yield from flux distribution
 - Uncompetitive enzyme inhibition
 - Noncompetitive enzyme inhibition
+- Hill equation / sigmoidal cooperative binding
+- Emax pharmacodynamic model
+- Flux balance analysis with iterative projection solver
+- Flux variability analysis (FVA)
+
+#### Growth (expanded)
+- Baranyi-Roberts lag-phase growth model
+- Gompertz growth model
+- Ratkowsky square-root temperature model
+- Cardinal temperature model (Rosso)
+- Cardinal pH model (Rosso)
+- Herbert-Pirt maintenance energy model and apparent yield
+- Tilman R* resource competition and winner prediction
+- Cross-feeding / syntrophy growth model
+- Multi-species chemostat dynamics with competitive exclusion
+
+#### Stochastic (new module)
+- General Gillespie SSA for arbitrary reaction networks
+- Tau-leaping approximate stochastic simulation
+- Poisson-distributed event firing
 
 #### Bridge (new module)
 - PK-driven IV time-kill simulation (`iv_time_kill`)
@@ -65,6 +85,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Steady-state trough concentration
 - Regrowth time prediction
 - Dose calculation for target Cmax/MIC ratio
+- Post-antibiotic effect (PAE) duration model
+- Time-kill ODE (logistic growth + Emax killing)
+- Biofilm-limited growth rate (diffusion + Monod)
+- Biofilm stage growth modifiers and MIC multipliers
+- Biofilm-adjusted kill curve
+- Kimiya bridges (feature-gated): Arrhenius→growth modifier, pH→growth modifier,
+  temperature-adjusted Michaelis-Menten, chemical half-life→PK
 
 #### Taxonomy
 - Domain trait queries (`is_eukaryotic`, `is_prokaryotic`)

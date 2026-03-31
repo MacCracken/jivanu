@@ -1,7 +1,8 @@
 //! Cross-module bridges — composing models from different domains.
 //!
 //! Functions that connect pharmacokinetics, resistance, growth, and other
-//! modules into integrated simulations.
+//! modules into integrated simulations. When the `kimiya` feature is enabled,
+//! additional bridges to the chemistry engine are available.
 
 use serde::{Deserialize, Serialize};
 
@@ -467,6 +468,106 @@ pub fn time_kill_ode_step(
     Ok((population + dn * dt).max(0.0))
 }
 
+// ---------------------------------------------------------------------------
+// Kimiya (chemistry) bridges — available when the `kimiya` feature is enabled
+// ---------------------------------------------------------------------------
+
+/// Convert Arrhenius chemical rate scaling to a microbial growth rate modifier.
+///
+/// Uses kimiya's Arrhenius equation to compute how temperature affects
+/// enzyme-catalyzed metabolic reactions, then normalizes relative to
+/// a reference temperature to produce a growth rate multiplier.
+///
+/// `modifier = k(T) / k(T_ref) = exp(-Ea/R × (1/T - 1/T_ref))`
+///
+/// # Arguments
+///
+/// - `activation_energy_j` — activation energy (J/mol), typically 50-80 kJ/mol for metabolic enzymes
+/// - `temperature_k` — current temperature (K)
+/// - `reference_temp_k` — reference temperature (K), typically 310.15 (37°C)
+///
+/// # Errors
+///
+/// Returns error if temperatures are non-positive.
+#[cfg(feature = "kimiya")]
+#[inline]
+#[must_use = "returns the growth rate modifier without side effects"]
+pub fn arrhenius_growth_modifier(
+    activation_energy_j: f64,
+    temperature_k: f64,
+    reference_temp_k: f64,
+) -> Result<f64> {
+    validate_positive(temperature_k, "temperature_k")?;
+    validate_positive(reference_temp_k, "reference_temp_k")?;
+    // k(T) / k(T_ref) using Arrhenius via kimiya
+    let k_t = kimiya::arrhenius_rate(1.0, activation_energy_j, temperature_k)
+        .map_err(|e| crate::error::JivanuError::ComputationError(e.to_string()))?;
+    let k_ref = kimiya::arrhenius_rate(1.0, activation_energy_j, reference_temp_k)
+        .map_err(|e| crate::error::JivanuError::ComputationError(e.to_string()))?;
+    if k_ref <= 0.0 {
+        return Ok(0.0);
+    }
+    Ok(k_t / k_ref)
+}
+
+/// Convert solution pH (from kimiya) to a microbial growth modifier.
+///
+/// Takes the hydrogen ion concentration, converts to pH via kimiya,
+/// then applies the cardinal pH model from [`crate::growth::cardinal_ph`].
+///
+/// # Errors
+///
+/// Returns error if parameters are invalid.
+#[cfg(feature = "kimiya")]
+#[must_use = "returns the pH growth modifier without side effects"]
+pub fn h_concentration_to_growth_modifier(
+    h_molar: f64,
+    ph_min: f64,
+    ph_opt: f64,
+    ph_max: f64,
+) -> Result<f64> {
+    let ph = kimiya::ph_from_h_concentration(h_molar)
+        .map_err(|e| crate::error::JivanuError::ComputationError(e.to_string()))?;
+    growth::cardinal_ph(ph, ph_min, ph_opt, ph_max)
+}
+
+/// Temperature-adjusted Michaelis-Menten rate.
+///
+/// Combines kimiya's Arrhenius temperature scaling with jivanu's
+/// Michaelis-Menten enzyme kinetics. V_max is scaled by the Arrhenius
+/// factor relative to a reference temperature.
+///
+/// # Errors
+///
+/// Returns error if parameters are invalid.
+#[cfg(feature = "kimiya")]
+#[must_use = "returns the temperature-adjusted rate without side effects"]
+pub fn temperature_adjusted_michaelis_menten(
+    substrate: f64,
+    v_max_ref: f64,
+    k_m: f64,
+    activation_energy_j: f64,
+    temperature_k: f64,
+    reference_temp_k: f64,
+) -> Result<f64> {
+    let modifier = arrhenius_growth_modifier(activation_energy_j, temperature_k, reference_temp_k)?;
+    let v_max_adj = v_max_ref * modifier;
+    crate::metabolism::michaelis_menten(substrate, v_max_adj, k_m)
+}
+
+/// Convert drug half-life from chemical first-order kinetics to PK elimination rate.
+///
+/// Bridges kimiya's `half_life_first_order` with jivanu's PK models.
+/// Chemical degradation rate constants can be used as drug elimination constants.
+#[cfg(feature = "kimiya")]
+#[inline]
+#[must_use = "returns the elimination rate without side effects"]
+pub fn chemical_half_life_to_pk(rate_constant: f64) -> Result<f64> {
+    let t_half = kimiya::kinetics::half_life_first_order(rate_constant)
+        .map_err(|e| crate::error::JivanuError::ComputationError(e.to_string()))?;
+    pharmacokinetics::elimination_rate(t_half)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -712,5 +813,57 @@ mod tests {
         let json = serde_json::to_string(&pt).unwrap();
         let back: TimeKillPoint = serde_json::from_str(&json).unwrap();
         assert!((pt.survival - back.survival).abs() < 1e-10);
+    }
+
+    // --- Kimiya bridge tests (feature-gated) ---
+
+    #[cfg(feature = "kimiya")]
+    #[test]
+    fn test_arrhenius_growth_modifier_at_reference() {
+        // At T = T_ref, modifier should be 1.0
+        let m = arrhenius_growth_modifier(50_000.0, 310.15, 310.15).unwrap();
+        assert!((m - 1.0).abs() < 1e-10);
+    }
+
+    #[cfg(feature = "kimiya")]
+    #[test]
+    fn test_arrhenius_growth_modifier_higher_temp() {
+        // Higher temp → faster rate → modifier > 1
+        let m = arrhenius_growth_modifier(50_000.0, 320.0, 310.15).unwrap();
+        assert!(m > 1.0, "modifier = {m}");
+    }
+
+    #[cfg(feature = "kimiya")]
+    #[test]
+    fn test_arrhenius_growth_modifier_lower_temp() {
+        // Lower temp → slower rate → modifier < 1
+        let m = arrhenius_growth_modifier(50_000.0, 300.0, 310.15).unwrap();
+        assert!(m < 1.0, "modifier = {m}");
+    }
+
+    #[cfg(feature = "kimiya")]
+    #[test]
+    fn test_h_concentration_to_growth_modifier() {
+        // pH 7 (H+ = 1e-7) with cardinal 4/7/9 → modifier ≈ 1.0
+        let m = h_concentration_to_growth_modifier(1e-7, 4.0, 7.0, 9.0).unwrap();
+        assert!((m - 1.0).abs() < 0.01, "modifier = {m}");
+    }
+
+    #[cfg(feature = "kimiya")]
+    #[test]
+    fn test_temperature_adjusted_mm() {
+        // At reference temp, should equal standard MM
+        let v_ref = crate::metabolism::michaelis_menten(5.0, 10.0, 1.0).unwrap();
+        let v_adj = temperature_adjusted_michaelis_menten(5.0, 10.0, 1.0, 50_000.0, 310.15, 310.15)
+            .unwrap();
+        assert!((v_ref - v_adj).abs() < 1e-6);
+    }
+
+    #[cfg(feature = "kimiya")]
+    #[test]
+    fn test_chemical_half_life_to_pk() {
+        // k = ln(2) → t½ = 1.0 → ke = ln(2)
+        let ke = chemical_half_life_to_pk(core::f64::consts::LN_2).unwrap();
+        assert!((ke - core::f64::consts::LN_2).abs() < 1e-10);
     }
 }
