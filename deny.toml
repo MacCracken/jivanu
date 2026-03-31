@@ -12,12 +12,18 @@ allow = [
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
     "BSD-3-Clause",
-    "GPL-3.0-only",
     "ISC",
-    "OpenSSL",
     "Unicode-3.0",
     "Unicode-DFS-2016",
     "Zlib",
+    "OpenSSL",
+    "GPL-3.0",
+    "GPL-3.0-only",
+    "AGPL-3.0",
+    "AGPL-3.0-only",
+    "CC0-1.0",
+    "NCSA",
+    "CDLA-Permissive-2.0",
 ]
 
 [bans]

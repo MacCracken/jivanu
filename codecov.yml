@@ -10,4 +10,5 @@ coverage:
 
 ignore:
   - "benches/"
+  - "tests/"
   - "examples/"
