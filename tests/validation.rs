@@ -174,14 +174,14 @@ fn validate_standard_genetic_code() {
     );
 }
 
-/// Glycine: lightest amino acid, MW ≈ 75.03 Da.
+/// Glycine: lightest amino acid, average MW ≈ 75.07 Da (C2H5NO2).
 /// Tryptophan: heaviest, MW ≈ 204.23 Da.
 /// Source: NIST Chemistry WebBook.
 #[test]
 fn validate_amino_acid_mw_extremes() {
     let gly = jivanu::genetics::AminoAcid::Glycine.molecular_weight();
     let trp = jivanu::genetics::AminoAcid::Tryptophan.molecular_weight();
-    assert!((gly - 75.032).abs() < 0.01);
+    assert!((gly - 75.067).abs() < 0.005);
     assert!((trp - 204.228).abs() < 0.01);
     // Gly is lightest, Trp is heaviest
     assert!(gly < trp);

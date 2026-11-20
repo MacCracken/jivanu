@@ -12,7 +12,7 @@ Thank you for your interest in contributing to Jivanu.
 
 ## Prerequisites
 
-- Rust stable (MSRV 1.89)
+- Rust stable (MSRV 1.100)
 - Components: `rustfmt`, `clippy`
 - Optional: `cargo-audit`, `cargo-deny`, `cargo-llvm-cov`, `cargo-tarpaulin`
 
@@ -52,7 +52,7 @@ in `Cargo.toml` and use `#[cfg(feature = "...")]` on the module and its tests.
 | `std` | Standard library support (default) |
 | `hisab` | RK4 ODE integration for epidemiology, competition, PK models |
 | `kimiya` | Chemistry bridges (Arrhenius, pH, temperature-adjusted kinetics) |
-| `pramana` | Statistics/probability (planned: stochastic models) |
+| `pramana`, `logging` | Deprecated no-ops, kept for backward compatibility |
 | `full` | Enables all optional features |
 
 ## Code Style

@@ -2,7 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{Result, validate_non_negative, validate_positive};
+use crate::error::{
+    JivanuError, Result, validate_finite, validate_non_negative, validate_positive,
+};
 
 /// Michaelis-Menten enzyme kinetics.
 ///
@@ -22,21 +24,42 @@ pub fn michaelis_menten(substrate: f64, v_max: f64, k_m: f64) -> Result<f64> {
     Ok(v_max * substrate / (k_m + substrate))
 }
 
-/// Lineweaver-Burk double reciprocal plot parameters.
+/// Lineweaver-Burk double-reciprocal coordinates of one observation.
 ///
-/// `1/v = (K_m / V_max) * (1/[S]) + 1/V_max`
+/// Transforms a measured rate `v` at substrate concentration `[S]` into the
+/// point `(1/[S], 1/v)` of a Lineweaver-Burk plot, on which Michaelis-Menten
+/// data fall on the line `1/v = (K_m / V_max) · (1/[S]) + 1/V_max`
+/// (see [`lineweaver_burk_line`]).
 ///
-/// Returns `(slope = K_m/V_max, intercept = 1/V_max)`.
+/// Returns `(x = 1/[S], y = 1/v)`.
 ///
 /// # Errors
 ///
 /// Returns error if v or s is non-positive.
 #[inline]
-#[must_use = "returns the plot parameters without side effects"]
+#[must_use = "returns the plot coordinates without side effects"]
 pub fn lineweaver_burk(v: f64, s: f64) -> Result<(f64, f64)> {
     validate_positive(v, "v")?;
     validate_positive(s, "s")?;
     Ok((1.0 / s, 1.0 / v))
+}
+
+/// Lineweaver-Burk line for given Michaelis-Menten parameters.
+///
+/// `1/v = (K_m / V_max) · (1/[S]) + 1/V_max`
+///
+/// Returns `(slope = K_m/V_max, intercept = 1/V_max)`. The x-intercept is
+/// `-1/K_m`.
+///
+/// # Errors
+///
+/// Returns error if `v_max` or `k_m` is non-positive.
+#[inline]
+#[must_use = "returns the line parameters without side effects"]
+pub fn lineweaver_burk_line(v_max: f64, k_m: f64) -> Result<(f64, f64)> {
+    validate_positive(v_max, "v_max")?;
+    validate_positive(k_m, "k_m")?;
+    Ok((k_m / v_max, 1.0 / v_max))
 }
 
 /// ATP yield from glycolysis.
@@ -211,30 +234,24 @@ pub struct MetabolicNetwork {
 impl MetabolicNetwork {
     /// Build a metabolic network from a set of reactions.
     ///
-    /// Automatically discovers all metabolites and constructs the
-    /// stoichiometric matrix.
+    /// Automatically discovers all metabolites (in order of first appearance)
+    /// and constructs the stoichiometric matrix. Repeated entries for the same
+    /// metabolite within a reaction are summed.
     #[must_use]
     pub fn from_reactions(reactions: Vec<Reaction>) -> Self {
-        // Collect unique metabolite names in order of first appearance
-        let mut metabolites: Vec<String> = Vec::new();
-        let mut met_index = std::collections::HashMap::new();
-        for rxn in &reactions {
-            for (met, _) in &rxn.stoichiometry {
-                if !met_index.contains_key(met) {
-                    met_index.insert(met.clone(), metabolites.len());
-                    metabolites.push(met.clone());
-                }
-            }
-        }
-
-        let n_met = metabolites.len();
         let n_rxn = reactions.len();
-        let mut s_matrix = vec![vec![0.0; n_rxn]; n_met];
-
+        let mut metabolites: Vec<String> = Vec::new();
+        let mut s_matrix: Vec<Vec<f64>> = Vec::new();
+        let mut index: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
         for (j, rxn) in reactions.iter().enumerate() {
             for (met, coeff) in &rxn.stoichiometry {
-                if let Some(&i) = met_index.get(met) {
-                    s_matrix[i][j] += *coeff;
+                let i = *index.entry(met.as_str()).or_insert_with(|| {
+                    metabolites.push(met.clone());
+                    s_matrix.push(vec![0.0; n_rxn]);
+                    metabolites.len() - 1
+                });
+                if let Some(cell) = s_matrix.get_mut(i).and_then(|row| row.get_mut(j)) {
+                    *cell += *coeff;
                 }
             }
         }
@@ -260,29 +277,46 @@ impl MetabolicNetwork {
         self.reactions.len()
     }
 
+    /// Check that `s_matrix` is `n_metabolites × n_reactions`.
+    ///
+    /// The fields are public, so a network can be edited into an
+    /// inconsistent shape; every computation checks this first.
+    fn validate_shape(&self) -> Result<()> {
+        let n_rxn = self.n_reactions();
+        if self.s_matrix.len() != self.n_metabolites()
+            || self.s_matrix.iter().any(|row| row.len() != n_rxn)
+        {
+            return Err(JivanuError::ComputationError(format!(
+                "stoichiometric matrix must be {} × {n_rxn}",
+                self.n_metabolites()
+            )));
+        }
+        Ok(())
+    }
+
+    fn check_fluxes(&self, fluxes: &[f64]) -> Result<()> {
+        if fluxes.len() != self.n_reactions() {
+            return Err(JivanuError::ComputationError(format!(
+                "flux vector length {} != {} reactions",
+                fluxes.len(),
+                self.n_reactions()
+            )));
+        }
+        self.validate_shape()
+    }
+
     /// Compute the net production rate for each metabolite: `S · v`.
     ///
     /// A positive value means net production, negative means net consumption.
     ///
     /// # Errors
     ///
-    /// Returns error if the flux vector length doesn't match the number of reactions.
+    /// Returns error if the flux vector length doesn't match the number of
+    /// reactions, or the stoichiometric matrix has an inconsistent shape.
     #[must_use = "returns the net production rates without side effects"]
     pub fn net_production(&self, fluxes: &[f64]) -> Result<Vec<f64>> {
-        if fluxes.len() != self.n_reactions() {
-            return Err(crate::error::JivanuError::ComputationError(format!(
-                "flux vector length {} != {} reactions",
-                fluxes.len(),
-                self.n_reactions()
-            )));
-        }
-        let mut result = vec![0.0; self.n_metabolites()];
-        for (i, row) in self.s_matrix.iter().enumerate() {
-            for (j, &coeff) in row.iter().enumerate() {
-                result[i] += coeff * fluxes[j];
-            }
-        }
-        Ok(result)
+        self.check_fluxes(fluxes)?;
+        Ok(self.s_matrix.iter().map(|row| dot(row, fluxes)).collect())
     }
 
     /// Check whether a flux vector satisfies steady-state mass balance.
@@ -292,11 +326,16 @@ impl MetabolicNetwork {
     ///
     /// # Errors
     ///
-    /// Returns error if the flux vector length doesn't match.
+    /// Returns error if the flux vector length doesn't match or `tolerance`
+    /// is negative or non-finite.
     #[must_use = "returns whether steady state holds without side effects"]
     pub fn is_steady_state(&self, fluxes: &[f64], tolerance: f64) -> Result<bool> {
-        let sv = self.net_production(fluxes)?;
-        Ok(sv.iter().all(|&v| v.abs() < tolerance))
+        validate_non_negative(tolerance, "tolerance")?;
+        self.check_fluxes(fluxes)?;
+        Ok(self
+            .s_matrix
+            .iter()
+            .all(|row| dot(row, fluxes).abs() < tolerance))
     }
 
     /// Compute net ATP yield for a flux distribution.
@@ -310,31 +349,21 @@ impl MetabolicNetwork {
     /// Returns error if the flux vector length doesn't match.
     #[must_use = "returns the net ATP yield without side effects"]
     pub fn net_atp(&self, fluxes: &[f64], atp_metabolite: &str) -> Result<f64> {
-        if fluxes.len() != self.n_reactions() {
-            return Err(crate::error::JivanuError::ComputationError(format!(
-                "flux vector length {} != {} reactions",
-                fluxes.len(),
-                self.n_reactions()
-            )));
-        }
-        let atp_row = self.metabolites.iter().position(|m| m == atp_metabolite);
-        match atp_row {
-            Some(i) => {
-                let mut total = 0.0;
-                for (j, &coeff) in self.s_matrix[i].iter().enumerate() {
-                    total += coeff * fluxes[j];
-                }
-                Ok(total)
-            }
-            None => Ok(0.0), // ATP not in network → 0 yield
-        }
+        self.check_fluxes(fluxes)?;
+        let atp_row = self
+            .metabolites
+            .iter()
+            .position(|m| m == atp_metabolite)
+            .and_then(|i| self.s_matrix.get(i));
+        // ATP not in network → 0 yield
+        Ok(atp_row.map_or(0.0, |row| dot(row, fluxes)))
     }
 }
 
 /// Result of flux balance analysis.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FbaResult {
-    /// Optimal flux vector.
+    /// Optimal flux vector (one entry per reaction).
     pub fluxes: Vec<f64>,
     /// Objective function value at optimum.
     pub objective_value: f64,
@@ -342,13 +371,42 @@ pub struct FbaResult {
     pub feasible: bool,
 }
 
+/// Validate FBA inputs and build the bounded LP over the network.
+fn fba_problem<'a>(
+    network: &'a MetabolicNetwork,
+    objective: &[f64],
+    lower_bounds: &'a [f64],
+    upper_bounds: &'a [f64],
+    zeros: &'a [f64],
+) -> Result<crate::lp::BoundedLp<'a>> {
+    let n_rxn = network.n_reactions();
+    if objective.len() != n_rxn || lower_bounds.len() != n_rxn || upper_bounds.len() != n_rxn {
+        return Err(JivanuError::ComputationError(
+            "objective, lower_bounds, upper_bounds must match reaction count".into(),
+        ));
+    }
+    network.validate_shape()?;
+    Ok(crate::lp::BoundedLp {
+        rows: &network.s_matrix,
+        rhs: zeros,
+        lower: lower_bounds,
+        upper: upper_bounds,
+    })
+}
+
 /// Flux balance analysis: maximize a linear objective subject to
 /// steady-state mass balance and flux bounds.
 ///
-/// Solves: `max c'v` subject to `Sv = 0`, `lb ≤ v ≤ ub`.
+/// Solves the linear program `max c'v` subject to `Sv = 0`, `lb ≤ v ≤ ub`
+/// exactly, using a dense two-phase simplex method (Dantzig pricing with
+/// Bland's anti-cycling rule). Suitable for small to medium networks (up to a
+/// few hundred reactions).
 ///
-/// Uses a bounded-variable simplex-like iterative projection method
-/// suitable for small to medium metabolic networks (up to ~200 reactions).
+/// Every metabolite in the network is treated as internal (balanced). Model
+/// uptake and secretion with explicit exchange reactions (e.g. `→ A` with
+/// stoichiometry `[("A", 1.0)]`), as in standard constraint-based modeling.
+///
+/// Bounds may be infinite (`f64::NEG_INFINITY` / `f64::INFINITY`).
 ///
 /// # Arguments
 ///
@@ -359,7 +417,9 @@ pub struct FbaResult {
 ///
 /// # Errors
 ///
-/// Returns error if dimensions are inconsistent.
+/// Returns error if dimensions are inconsistent, a bound is NaN or a lower
+/// bound exceeds its upper bound, or the objective is unbounded. An
+/// infeasible problem is reported as `Ok` with `feasible == false`.
 #[must_use = "returns the FBA result without side effects"]
 pub fn flux_balance_analysis(
     network: &MetabolicNetwork,
@@ -367,77 +427,56 @@ pub fn flux_balance_analysis(
     lower_bounds: &[f64],
     upper_bounds: &[f64],
 ) -> Result<FbaResult> {
-    let n_rxn = network.n_reactions();
-
-    if objective.len() != n_rxn || lower_bounds.len() != n_rxn || upper_bounds.len() != n_rxn {
-        return Err(crate::error::JivanuError::ComputationError(
-            "objective, lower_bounds, upper_bounds must match reaction count".into(),
-        ));
+    let zeros = vec![0.0; network.n_metabolites()];
+    let lp = fba_problem(network, objective, lower_bounds, upper_bounds, &zeros)?;
+    match lp.maximize(objective, None)? {
+        crate::lp::LpOutcome::Optimal(fluxes) => {
+            let objective_value = dot(&fluxes, objective);
+            Ok(FbaResult {
+                fluxes,
+                objective_value,
+                feasible: true,
+            })
+        }
+        crate::lp::LpOutcome::Infeasible => {
+            let fluxes: Vec<f64> = lower_bounds
+                .iter()
+                .zip(upper_bounds)
+                .map(|(&lo, &hi)| 0.0_f64.clamp(lo, hi))
+                .collect();
+            let objective_value = dot(&fluxes, objective);
+            Ok(FbaResult {
+                fluxes,
+                objective_value,
+                feasible: false,
+            })
+        }
+        crate::lp::LpOutcome::Unbounded => Err(JivanuError::SimulationFailed(
+            "FBA objective is unbounded; add finite flux bounds".into(),
+        )),
     }
-
-    // Simple iterative projection method:
-    // 1. Start with fluxes at midpoint of bounds
-    // 2. Project onto Sv=0 nullspace
-    // 3. Clip to bounds
-    // 4. Iterate with gradient ascent on objective
-    let mut v: Vec<f64> = (0..n_rxn)
-        .map(|i| {
-            let mid = (lower_bounds[i] + upper_bounds[i]) / 2.0;
-            mid.clamp(lower_bounds[i], upper_bounds[i])
-        })
-        .collect();
-
-    let max_iter = 1000;
-    let step_size = 0.01;
-
-    for _ in 0..max_iter {
-        // Gradient ascent on objective
-        for j in 0..n_rxn {
-            v[j] += step_size * objective[j];
-        }
-
-        // Project onto Sv=0: v = v - S^T (S S^T)^{-1} S v
-        // Simplified: iteratively reduce Sv residual
-        for _ in 0..10 {
-            let sv = network.net_production(&v)?;
-            let residual_norm: f64 = sv.iter().map(|x| x * x).sum();
-            if residual_norm < 1e-20 {
-                break;
-            }
-            // Subtract proportional correction
-            for (i, &sv_i) in sv.iter().enumerate() {
-                for (j, v_j) in v.iter_mut().enumerate() {
-                    *v_j -= 0.1 * network.s_matrix[i][j] * sv_i;
-                }
-            }
-        }
-
-        // Clip to bounds
-        for j in 0..n_rxn {
-            v[j] = v[j].clamp(lower_bounds[j], upper_bounds[j]);
-        }
-    }
-
-    // Final Sv check
-    let sv = network.net_production(&v)?;
-    let feasible = sv.iter().all(|&x| x.abs() < 0.01);
-    let objective_value: f64 = v.iter().zip(objective).map(|(vi, ci)| vi * ci).sum();
-
-    Ok(FbaResult {
-        fluxes: v,
-        objective_value,
-        feasible,
-    })
 }
 
-/// Flux variability analysis: find the min/max of each flux at optimal objective.
+#[inline]
+fn dot(a: &[f64], b: &[f64]) -> f64 {
+    a.iter().zip(b).map(|(x, y)| x * y).sum()
+}
+
+/// Flux variability analysis: find the min/max of each flux at (near-)optimal objective.
 ///
-/// For each reaction, returns `(min_flux, max_flux)` while maintaining
-/// the objective value within `fraction` of optimal (default: 1.0 = exact optimal).
+/// First solves FBA for the optimum `Z`, then for each reaction `j` solves two
+/// linear programs, minimizing and maximizing `v_j` subject to `Sv = 0`, the
+/// flux bounds, and `c'v ≥ Z − (1 − fraction)·|Z|`. With `fraction = 1.0`
+/// the ranges are those compatible with the exact optimum; with `0.0` they
+/// span the whole feasible flux space.
+///
+/// Returns `(min_flux, max_flux)` for each reaction. A direction that is
+/// unbounded (possible only with infinite bounds) is reported as `±inf`.
 ///
 /// # Errors
 ///
-/// Returns error if FBA fails or dimensions are inconsistent.
+/// Returns error if FBA fails, the problem is infeasible, dimensions are
+/// inconsistent, or `fraction` is outside `[0, 1]`.
 #[must_use = "returns the flux ranges without side effects"]
 pub fn flux_variability_analysis(
     network: &MetabolicNetwork,
@@ -446,28 +485,43 @@ pub fn flux_variability_analysis(
     upper_bounds: &[f64],
     fraction: f64,
 ) -> Result<Vec<(f64, f64)>> {
+    validate_finite(fraction, "fraction")?;
+    if !(0.0..=1.0).contains(&fraction) {
+        return Err(JivanuError::ComputationError(format!(
+            "fraction must be in [0, 1], got {fraction}"
+        )));
+    }
     let fba = flux_balance_analysis(network, objective, lower_bounds, upper_bounds)?;
-    let n_rxn = network.n_reactions();
-    let opt_val = fba.objective_value;
-
-    let mut ranges = Vec::with_capacity(n_rxn);
-
-    for j in 0..n_rxn {
-        // For min: set objective to minimize reaction j
-        // For max: set objective to maximize reaction j
-        // Both subject to original objective >= fraction * opt_val
-        // Simplified: use the FBA solution bounds adjusted
-        let min_v = lower_bounds[j];
-        let max_v = upper_bounds[j];
-        // Use the FBA result as a reasonable estimate
-        let fba_v = fba.fluxes[j];
-        ranges.push((
-            min_v.max(fba_v - opt_val.abs()),
-            max_v.min(fba_v + opt_val.abs()),
+    if !fba.feasible {
+        return Err(JivanuError::SimulationFailed(
+            "FVA requires a feasible FBA problem".into(),
         ));
     }
+    let z = fba.objective_value;
+    // Small slack keeps the optimal face feasible despite rounding.
+    let threshold = z - (1.0 - fraction) * z.abs() - 1e-9 * (1.0 + z.abs());
 
-    let _ = fraction; // Used in full implementation with LP solver
+    let zeros = vec![0.0; network.n_metabolites()];
+    let lp = fba_problem(network, objective, lower_bounds, upper_bounds, &zeros)?;
+    let n_rxn = network.n_reactions();
+    let mut unit = vec![0.0; n_rxn];
+    let mut ranges = Vec::with_capacity(n_rxn);
+    for j in 0..n_rxn {
+        unit[j] = 1.0;
+        let max_v = match lp.maximize(&unit, Some((objective, threshold)))? {
+            crate::lp::LpOutcome::Optimal(v) => v[j],
+            crate::lp::LpOutcome::Unbounded => f64::INFINITY,
+            crate::lp::LpOutcome::Infeasible => fba.fluxes[j],
+        };
+        unit[j] = -1.0;
+        let min_v = match lp.maximize(&unit, Some((objective, threshold)))? {
+            crate::lp::LpOutcome::Optimal(v) => v[j],
+            crate::lp::LpOutcome::Unbounded => f64::NEG_INFINITY,
+            crate::lp::LpOutcome::Infeasible => fba.fluxes[j],
+        };
+        unit[j] = 0.0;
+        ranges.push((min_v.min(max_v), max_v.max(min_v)));
+    }
     Ok(ranges)
 }
 
@@ -491,9 +545,18 @@ pub fn hill_equation(substrate: f64, v_max: f64, k: f64, n: f64) -> Result<f64> 
     validate_positive(v_max, "v_max")?;
     validate_positive(k, "k")?;
     validate_positive(n, "n")?;
-    let s_n = substrate.powf(n);
-    let k_n = k.powf(n);
-    Ok(v_max * s_n / (k_n + s_n))
+    Ok(v_max * hill_fraction(substrate, k, n))
+}
+
+/// Fractional saturation `S^n / (K^n + S^n)`, evaluated as
+/// `1 / (1 + (K/S)^n)` so that large `S` or `n` cannot overflow to `inf/inf`.
+#[inline]
+fn hill_fraction(s: f64, k: f64, n: f64) -> f64 {
+    if s <= 0.0 {
+        0.0
+    } else {
+        1.0 / (1.0 + (k / s).powf(n))
+    }
 }
 
 /// Emax pharmacodynamic model — sigmoidal drug effect.
@@ -515,9 +578,7 @@ pub fn emax_model(concentration: f64, e_max: f64, ec50: f64, n: f64) -> Result<f
     validate_positive(e_max, "e_max")?;
     validate_positive(ec50, "ec50")?;
     validate_positive(n, "n")?;
-    let c_n = concentration.powf(n);
-    let ec_n = ec50.powf(n);
-    Ok(e_max * c_n / (ec_n + c_n))
+    Ok(e_max * hill_fraction(concentration, ec50, n))
 }
 
 #[cfg(test)]
@@ -850,30 +911,131 @@ mod tests {
 
     // --- FBA tests ---
 
+    fn rxn(id: &str, stoich: &[(&str, f64)]) -> Reaction {
+        Reaction {
+            id: id.into(),
+            stoichiometry: stoich.iter().map(|&(m, c)| (m.into(), c)).collect(),
+            reversible: false,
+        }
+    }
+
+    /// Uptake → A → B → C → secretion.
+    fn linear_pathway() -> MetabolicNetwork {
+        MetabolicNetwork::from_reactions(vec![
+            rxn("EX_A", &[("A", 1.0)]),
+            rxn("r1", &[("A", -1.0), ("B", 1.0)]),
+            rxn("r2", &[("B", -1.0), ("C", 1.0)]),
+            rxn("EX_C", &[("C", -1.0)]),
+        ])
+    }
+
     #[test]
     fn test_fba_simple_linear() {
-        // A → B → C, maximize C production
+        // Uptake capped at 10 → every flux in the chain is 10.
+        let net = linear_pathway();
+        let result = flux_balance_analysis(
+            &net,
+            &[0.0, 0.0, 1.0, 0.0],
+            &[0.0; 4],
+            &[10.0, 1000.0, 1000.0, 1000.0],
+        )
+        .unwrap();
+        assert!(result.feasible);
+        assert!((result.objective_value - 10.0).abs() < 1e-9);
+        for v in &result.fluxes {
+            assert!((v - 10.0).abs() < 1e-9, "fluxes = {:?}", result.fluxes);
+        }
+        assert!(net.is_steady_state(&result.fluxes, 1e-9).unwrap());
+    }
+
+    #[test]
+    fn test_fba_closed_network_has_zero_flux() {
+        // A → B → C with no exchange reactions: mass balance forces v = 0.
         let net = MetabolicNetwork::from_reactions(vec![
-            Reaction {
-                id: "r1".into(),
-                stoichiometry: vec![("A".into(), -1.0), ("B".into(), 1.0)],
-                reversible: false,
-            },
-            Reaction {
-                id: "r2".into(),
-                stoichiometry: vec![("B".into(), -1.0), ("C".into(), 1.0)],
-                reversible: false,
-            },
+            rxn("r1", &[("A", -1.0), ("B", 1.0)]),
+            rxn("r2", &[("B", -1.0), ("C", 1.0)]),
+        ]);
+        let result = flux_balance_analysis(&net, &[0.0, 1.0], &[0.0, 0.0], &[10.0, 10.0]).unwrap();
+        assert!(result.feasible);
+        assert!(result.objective_value.abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_fba_branch_choice() {
+        // A can become B (yield 1) or C (yield 2 ATP); maximize ATP.
+        let net = MetabolicNetwork::from_reactions(vec![
+            rxn("EX_A", &[("A", 1.0)]),
+            rxn("to_B", &[("A", -1.0), ("B", 1.0), ("ATP", 1.0)]),
+            rxn("to_C", &[("A", -1.0), ("C", 1.0), ("ATP", 2.0)]),
+            rxn("EX_B", &[("B", -1.0)]),
+            rxn("EX_C", &[("C", -1.0)]),
+            rxn("ATPM", &[("ATP", -1.0)]),
+        ]);
+        let lb = [0.0; 6];
+        let ub = [5.0, 100.0, 100.0, 100.0, 100.0, 100.0];
+        let result =
+            flux_balance_analysis(&net, &[0.0, 0.0, 0.0, 0.0, 0.0, 1.0], &lb, &ub).unwrap();
+        assert!((result.objective_value - 10.0).abs() < 1e-9);
+        assert!((result.fluxes[2] - 5.0).abs() < 1e-9, "all flux via to_C");
+        assert!(result.fluxes[1].abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_fba_infeasible() {
+        // Secretion forced ≥ 5 but uptake capped at 1.
+        let net = linear_pathway();
+        let result = flux_balance_analysis(
+            &net,
+            &[0.0, 0.0, 0.0, 1.0],
+            &[0.0, 0.0, 0.0, 5.0],
+            &[1.0, 10.0, 10.0, 10.0],
+        )
+        .unwrap();
+        assert!(!result.feasible);
+    }
+
+    #[test]
+    fn test_fba_unbounded_is_error() {
+        let net = linear_pathway();
+        let inf = f64::INFINITY;
+        assert!(flux_balance_analysis(&net, &[0.0, 0.0, 1.0, 0.0], &[0.0; 4], &[inf; 4]).is_err());
+    }
+
+    #[test]
+    fn test_fba_rejects_inverted_or_nan_bounds() {
+        // Previously panicked inside f64::clamp.
+        let net = linear_pathway();
+        assert!(flux_balance_analysis(&net, &[1.0; 4], &[0.0, 5.0, 0.0, 0.0], &[1.0; 4]).is_err());
+        assert!(
+            flux_balance_analysis(&net, &[1.0; 4], &[f64::NAN, 0.0, 0.0, 0.0], &[1.0; 4]).is_err()
+        );
+    }
+
+    #[test]
+    fn test_fba_reversible_reaction() {
+        // EX_A: A ⇌ (secretion when positive, uptake when negative).
+        let net = MetabolicNetwork::from_reactions(vec![
+            rxn("EX_A", &[("A", -1.0)]),
+            rxn("r1", &[("A", -1.0), ("B", 1.0)]),
+            rxn("EX_B", &[("B", -1.0)]),
         ]);
         let result = flux_balance_analysis(
             &net,
-            &[0.0, 1.0],   // maximize r2
-            &[0.0, 0.0],   // lower bounds
-            &[10.0, 10.0], // upper bounds
+            &[0.0, 1.0, 0.0],
+            &[-8.0, 0.0, 0.0],
+            &[1000.0, 1000.0, 1000.0],
         )
         .unwrap();
-        // Both fluxes should be equal for steady-state B
-        assert!(result.objective_value > 0.0);
+        assert!((result.objective_value - 8.0).abs() < 1e-9);
+        assert!((result.fluxes[0] + 8.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_inconsistent_s_matrix_is_error_not_panic() {
+        let mut net = linear_pathway();
+        net.s_matrix[0].pop();
+        assert!(net.net_production(&[1.0; 4]).is_err());
+        assert!(flux_balance_analysis(&net, &[1.0; 4], &[0.0; 4], &[1.0; 4]).is_err());
     }
 
     #[test]
@@ -919,5 +1081,84 @@ mod tests {
         for (lo, hi) in &ranges {
             assert!(lo <= hi);
         }
+    }
+    /// Uptake A, two parallel isozymes A → B, secrete B.
+    fn parallel_pathway() -> MetabolicNetwork {
+        MetabolicNetwork::from_reactions(vec![
+            rxn("EX_A", &[("A", 1.0)]),
+            rxn("iso1", &[("A", -1.0), ("B", 1.0)]),
+            rxn("iso2", &[("A", -1.0), ("B", 1.0)]),
+            rxn("EX_B", &[("B", -1.0)]),
+        ])
+    }
+
+    #[test]
+    fn test_fva_parallel_isozymes() {
+        let net = parallel_pathway();
+        let lb = [0.0; 4];
+        let ub = [10.0, 100.0, 100.0, 100.0];
+        let c = [0.0, 0.0, 0.0, 1.0];
+        let ranges = flux_variability_analysis(&net, &c, &lb, &ub, 1.0).unwrap();
+        let expected = [(10.0, 10.0), (0.0, 10.0), (0.0, 10.0), (10.0, 10.0)];
+        for (j, ((lo, hi), (elo, ehi))) in ranges.iter().zip(expected).enumerate() {
+            assert!((lo - elo).abs() < 1e-7, "reaction {j}: lo {lo} != {elo}");
+            assert!((hi - ehi).abs() < 1e-7, "reaction {j}: hi {hi} != {ehi}");
+        }
+    }
+
+    #[test]
+    fn test_fva_fraction_relaxes_ranges() {
+        let net = parallel_pathway();
+        let lb = [0.0; 4];
+        let ub = [10.0, 100.0, 100.0, 100.0];
+        let c = [0.0, 0.0, 0.0, 1.0];
+        // 50% of optimum: secretion may drop to 5.
+        let half = flux_variability_analysis(&net, &c, &lb, &ub, 0.5).unwrap();
+        assert!((half[3].0 - 5.0).abs() < 1e-7, "{:?}", half[3]);
+        assert!((half[3].1 - 10.0).abs() < 1e-7);
+        // 0%: anything feasible.
+        let free = flux_variability_analysis(&net, &c, &lb, &ub, 0.0).unwrap();
+        assert!(free[0].0.abs() < 1e-7);
+    }
+
+    #[test]
+    fn test_fva_invalid_fraction() {
+        let net = parallel_pathway();
+        let lb = [0.0; 4];
+        let ub = [10.0; 4];
+        let c = [0.0, 0.0, 0.0, 1.0];
+        assert!(flux_variability_analysis(&net, &c, &lb, &ub, 1.5).is_err());
+        assert!(flux_variability_analysis(&net, &c, &lb, &ub, f64::NAN).is_err());
+    }
+
+    #[test]
+    fn test_lineweaver_burk_line() {
+        // K_m = 2, V_max = 10 → slope 0.2, intercept 0.1
+        let (slope, intercept) = lineweaver_burk_line(10.0, 2.0).unwrap();
+        assert!((slope - 0.2).abs() < 1e-12);
+        assert!((intercept - 0.1).abs() < 1e-12);
+        // A point generated by Michaelis-Menten lies on the line.
+        let v = michaelis_menten(5.0, 10.0, 2.0).unwrap();
+        let (x, y) = lineweaver_burk(v, 5.0).unwrap();
+        assert!((y - (slope * x + intercept)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_hill_extreme_inputs_finite() {
+        // S^n overflowed to inf/inf = NaN with the naive form.
+        let r = hill_equation(1e200, 1.0, 1.0, 4.0).unwrap();
+        assert!((r - 1.0).abs() < 1e-12);
+        let e = emax_model(1e300, 2.0, 1.0, 3.0).unwrap();
+        assert!((e - 2.0).abs() < 1e-12);
+        assert_eq!(hill_equation(0.0, 1.0, 1.0, 0.5).unwrap(), 0.0);
+    }
+
+    #[test]
+    fn test_metabolic_network_serde_roundtrip() {
+        let net = linear_pathway();
+        let json = serde_json::to_string(&net).unwrap();
+        let back: MetabolicNetwork = serde_json::from_str(&json).unwrap();
+        assert_eq!(net.metabolites, back.metabolites);
+        assert_eq!(net.s_matrix, back.s_matrix);
     }
 }

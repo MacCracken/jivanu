@@ -11,16 +11,25 @@ jivanu/
 ├── pharmacokinetics.rs    — IV/oral PK, two-compartment, AUC, half-life
 ├── biofilm.rs             — Formation stages, quorum sensing, diffusion
 ├── resistance.rs          — Kill curves, MIC, FIC, checkerboard, combinations
-├── bridge.rs              — PK→resistance time-kill, PK/PD indices, multi-dose
+├── stochastic.rs          — Gillespie SSA, tau-leaping
+├── bridge.rs              — PK→resistance time-kill, PK/PD indices, multi-dose, kimiya
 ├── taxonomy.rs            — Domain, Gram stain, morphology, oxygen, trait queries
-└── error.rs               — JivanuError enum
+├── error.rs               — JivanuError enum, validation helpers
+├── lp.rs        (private) — dense two-phase simplex backing FBA/FVA
+└── rng.rs       (private) — seeded LCG + Poisson (Knuth / PTRS) for stochastic models
 ```
 
 ## Optional Dependencies
 
 - `hisab` — RK4 ODE integration for epidemiology, competition, and PK models
-- `pramana` — statistics/probability (planned: stochastic models)
-- `kimiya` — chemistry bridge (planned)
+- `kimiya` — chemistry bridges (Arrhenius, pH, temperature-adjusted kinetics, half-life)
+- `pramana`, `logging` — deprecated no-op features (dependencies removed in 1.1.0)
+
+## Invariants
+
+- Library code is panic-free: no `unwrap`/`expect`/`panic!` (enforced by
+  manifest lints), invalid input returns `JivanuError`.
+- Seeded stochastic simulations are reproducible for a given seed.
 
 ## Consumers
 

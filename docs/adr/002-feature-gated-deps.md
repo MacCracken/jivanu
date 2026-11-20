@@ -31,3 +31,10 @@ works with zero optional dependencies.
 - Feature-gated code requires `#[cfg(feature = "...")]` on functions and tests
 - CI must test all feature combinations (default, hisab, all-features)
 - Bridge module functions are split between always-available and feature-gated
+
+## Update (1.1.0)
+
+`pramana` was never used by any code path and has been dropped as a
+dependency, along with `tracing`/`tracing-subscriber` (`logging`). Both
+feature names remain as empty, deprecated features so downstream
+`features = [...]` lists keep compiling; they can be removed in 2.0.

@@ -208,8 +208,10 @@ pub struct CheckerboardResult {
 ///
 /// `FIC_ij = conc_a[i] / mic_a + conc_b[j] / mic_b`
 ///
-/// This produces the standard checkerboard isobologram grid used in
-/// antimicrobial susceptibility testing.
+/// This produces the reference isobologram grid used to lay out a
+/// checkerboard assay: `FIC_ij = 1` traces the additivity isobole. It is a
+/// model grid, not a measurement — `min_fic` is the smallest grid value, so
+/// interpret it only for wells observed to inhibit growth.
 ///
 /// # Arguments
 ///

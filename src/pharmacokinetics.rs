@@ -6,7 +6,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{JivanuError, Result, validate_non_negative, validate_positive};
+use crate::error::{
+    JivanuError, Result, validate_finite, validate_non_negative, validate_positive,
+};
 
 /// Elimination half-life from an elimination rate constant.
 ///
@@ -69,6 +71,12 @@ pub fn iv_bolus_concentration(dose: f64, v_d: f64, k_e: f64, t: f64) -> Result<f
 ///
 /// Bateman equation for first-order absorption and elimination.
 ///
+/// Evaluated in the cancellation-free form
+/// `C(t) = F·D·k_a/V_d × e^(-k_min·t) × (1 - e^(-|k_a - k_e|·t)) / |k_a - k_e|`
+/// with `k_min = min(k_a, k_e)`, which stays accurate when `k_a ≈ k_e` and
+/// reduces to the exact limit `F·D·k·t·e^(-k·t)/V_d` when `k_a = k_e`.
+/// Flip-flop kinetics (`k_a < k_e`) are handled.
+///
 /// # Arguments
 ///
 /// - `dose` — administered dose (mg)
@@ -80,7 +88,7 @@ pub fn iv_bolus_concentration(dose: f64, v_d: f64, k_e: f64, t: f64) -> Result<f
 ///
 /// # Errors
 ///
-/// Returns error if parameters are invalid or `k_a == k_e`.
+/// Returns error if parameters are invalid.
 #[inline]
 #[must_use = "returns the plasma concentration without side effects"]
 pub fn oral_concentration(
@@ -103,35 +111,46 @@ pub fn oral_concentration(
     validate_positive(k_e, "k_e")?;
     validate_non_negative(t, "t")?;
 
-    if (k_a - k_e).abs() < 1e-15 {
-        return Err(JivanuError::ComputationError(
-            "k_a must differ from k_e (flip-flop kinetics not supported)".into(),
-        ));
-    }
-
-    let numerator = bioavailability * dose * k_a;
-    let denominator = v_d * (k_a - k_e);
-    Ok(numerator / denominator * ((-k_e * t).exp() - (-k_a * t).exp()))
+    let k_min = k_a.min(k_e);
+    let gap = (k_a - k_e).abs();
+    // (1 - e^(-gap·t)) / gap, with the gap → 0 limit t. `exp_m1` is only
+    // needed where 1 - e^(-x) would cancel (x < 1); plain `exp` is faster.
+    let x = gap * t;
+    let shape = if gap == 0.0 {
+        t
+    } else if x < 1.0 {
+        -(-x).exp_m1() / gap
+    } else {
+        (1.0 - (-x).exp()) / gap
+    };
+    Ok(bioavailability * dose * k_a / v_d * (-k_min * t).exp() * shape)
 }
 
 /// Time to maximum concentration (Tmax) for oral one-compartment model.
 ///
 /// `T_max = ln(k_a / k_e) / (k_a - k_e)`
 ///
+/// Evaluated as `ln_1p((k_a - k_e)/k_e) / (k_a - k_e)` for accuracy when the
+/// rates are close; equals the limit `1/k` when `k_a = k_e`.
+///
 /// # Errors
 ///
-/// Returns error if rate constants are invalid or equal.
+/// Returns error if rate constants are invalid.
 #[inline]
 #[must_use = "returns the Tmax without side effects"]
 pub fn oral_tmax(k_a: f64, k_e: f64) -> Result<f64> {
     validate_positive(k_a, "k_a")?;
     validate_positive(k_e, "k_e")?;
-    if (k_a - k_e).abs() < 1e-15 {
-        return Err(JivanuError::ComputationError(
-            "k_a must differ from k_e".into(),
-        ));
+    let diff = k_a - k_e;
+    if diff == 0.0 {
+        return Ok(1.0 / k_e);
     }
-    Ok((k_a / k_e).ln() / (k_a - k_e))
+    let ratio = diff / k_e;
+    if ratio.abs() < 0.5 {
+        Ok(ratio.ln_1p() / diff)
+    } else {
+        Ok((k_a / k_e).ln() / diff)
+    }
 }
 
 /// Maximum concentration (Cmax) for oral one-compartment model.
@@ -156,7 +175,8 @@ pub fn oral_cmax(dose: f64, bioavailability: f64, v_d: f64, k_a: f64, k_e: f64) 
 ///
 /// # Errors
 ///
-/// Returns error if fewer than 2 data points or times are not increasing.
+/// Returns error if fewer than 2 data points, the slices differ in length,
+/// any value is non-finite, times decrease, or a concentration is negative.
 #[must_use = "returns the AUC without side effects"]
 pub fn auc_trapezoidal(times: &[f64], concentrations: &[f64]) -> Result<f64> {
     if times.len() != concentrations.len() {
@@ -169,15 +189,22 @@ pub fn auc_trapezoidal(times: &[f64], concentrations: &[f64]) -> Result<f64> {
             "at least 2 data points required for AUC".into(),
         ));
     }
+    for (&t, &c) in times.iter().zip(concentrations) {
+        validate_finite(t, "time")?;
+        validate_non_negative(c, "concentration")?;
+    }
     let mut auc = 0.0;
-    for i in 1..times.len() {
-        let dt = times[i] - times[i - 1];
+    for (tw, cw) in times.windows(2).zip(concentrations.windows(2)) {
+        let (&[t0, t1], &[c0, c1]) = (tw, cw) else {
+            continue;
+        };
+        let dt = t1 - t0;
         if dt < 0.0 {
             return Err(JivanuError::ComputationError(
                 "times must be monotonically increasing".into(),
             ));
         }
-        auc += 0.5 * (concentrations[i - 1] + concentrations[i]) * dt;
+        auc += 0.5 * (c0 + c1) * dt;
     }
     Ok(auc)
 }
@@ -199,7 +226,7 @@ pub fn auc_iv_bolus(dose: f64, v_d: f64, k_e: f64) -> Result<f64> {
 }
 
 /// Two-compartment IV bolus model state.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct TwoCompartmentState {
     /// Drug amount in the central compartment (mg).
     pub central: f64,
@@ -215,7 +242,7 @@ pub struct TwoCompartmentState {
 /// ```
 ///
 /// Plasma concentration is `A_c / V_c`.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct TwoCompartmentParams {
     /// Volume of the central compartment (L).
     pub v_c: f64,
@@ -380,8 +407,58 @@ mod tests {
     }
 
     #[test]
-    fn test_oral_tmax_equal_rates_error() {
-        assert!(oral_tmax(0.5, 0.5).is_err());
+    fn test_oral_tmax_equal_rates_limit() {
+        // k_a = k_e = k → Tmax = 1/k
+        let tmax = oral_tmax(0.5, 0.5).unwrap();
+        assert!((tmax - 2.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_oral_tmax_continuous_near_equal_rates() {
+        let exact = oral_tmax(0.5, 0.5).unwrap();
+        let near = oral_tmax(0.5 + 1e-12, 0.5).unwrap();
+        assert!(
+            (near - exact).abs() < 1e-9,
+            "near = {near}, exact = {exact}"
+        );
+    }
+
+    #[test]
+    fn test_oral_concentration_equal_rates_limit() {
+        // C(t) = F·D·k·t·e^(-k·t) / V
+        let (f, d, v, k, t) = (0.8, 500.0, 50.0, 0.3, 4.0);
+        let c = oral_concentration(d, f, v, k, k, t).unwrap();
+        let expected = f * d * k * t * (-k * t).exp() / v;
+        assert!((c - expected).abs() < 1e-12);
+        // Cmax at Tmax = 1/k is F·D/(V·e)
+        let cmax = oral_cmax(d, f, v, k, k).unwrap();
+        assert!((cmax - f * d / (v * core::f64::consts::E)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_oral_concentration_matches_bateman() {
+        // Stable form must agree with the textbook Bateman expression,
+        // including flip-flop kinetics (k_a < k_e).
+        for &(k_a, k_e) in &[(1.0, 0.1), (0.1, 1.0), (2.5, 0.7)] {
+            for &t in &[0.0, 0.5, 3.0, 24.0] {
+                let c = oral_concentration(500.0, 0.9, 40.0, k_a, k_e, t).unwrap();
+                let bateman = 0.9 * 500.0 * k_a / (40.0 * (k_a - k_e))
+                    * ((-k_e * t).exp() - (-k_a * t).exp());
+                assert!((c - bateman).abs() < 1e-10, "k_a={k_a} k_e={k_e} t={t}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_oral_concentration_flip_flop_long_time_finite() {
+        let c = oral_concentration(500.0, 1.0, 50.0, 0.01, 10.0, 1000.0).unwrap();
+        assert!(c.is_finite() && c >= 0.0);
+    }
+
+    #[test]
+    fn test_auc_trapezoidal_rejects_non_finite() {
+        assert!(auc_trapezoidal(&[0.0, f64::NAN], &[1.0, 1.0]).is_err());
+        assert!(auc_trapezoidal(&[0.0, 1.0], &[1.0, -1.0]).is_err());
     }
 
     #[test]

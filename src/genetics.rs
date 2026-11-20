@@ -62,24 +62,28 @@ pub fn gc_content(dna: &str) -> Result<f64> {
         ));
     }
     let mut gc = 0usize;
-    let mut total = 0usize;
-    for c in dna.chars() {
-        match c.to_ascii_uppercase() {
-            'G' | 'C' => {
-                gc += 1;
-                total += 1;
-            }
-            'A' | 'T' => {
-                total += 1;
-            }
-            _ => {
-                return Err(JivanuError::ComputationError(format!(
-                    "invalid DNA character: {c}"
-                )));
-            }
+    for (i, b) in dna.bytes().enumerate() {
+        match b.to_ascii_uppercase() {
+            b'G' | b'C' => gc += 1,
+            b'A' | b'T' => {}
+            _ => return Err(invalid_dna_char(dna, i)),
         }
     }
-    Ok(gc as f64 / total as f64)
+    // Every byte was an ASCII base, so the byte length is the base count.
+    Ok(gc as f64 / dna.len() as f64)
+}
+
+/// Error for the first invalid character, starting the search at byte `from`
+/// (which must be at or before the offending character).
+#[cold]
+fn invalid_dna_char(dna: &str, from: usize) -> JivanuError {
+    let c = dna
+        .get(from..)
+        .unwrap_or(dna)
+        .chars()
+        .find(|c| !matches!(c.to_ascii_uppercase(), 'A' | 'C' | 'G' | 'T'))
+        .unwrap_or('?');
+    JivanuError::ComputationError(format!("invalid DNA character: {c}"))
 }
 
 /// Selection coefficient: relative fitness difference.
@@ -237,7 +241,8 @@ impl AminoAcid {
 
     /// Average molecular weight of the free amino acid in daltons (Da).
     ///
-    /// Values from standard biochemistry references (NIST / UniProt).
+    /// Average (not monoisotopic) masses from standard biochemistry
+    /// references (NIST / UniProt); e.g. glycine C₂H₅NO₂ = 75.067 Da.
     /// For peptide mass calculation, subtract 18.015 Da (water) per
     /// peptide bond formed.
     /// Stop returns 0.0.
@@ -252,7 +257,7 @@ impl AminoAcid {
             Self::Cysteine => 121.159,
             Self::GlutamicAcid => 147.130,
             Self::Glutamine => 146.146,
-            Self::Glycine => 75.032,
+            Self::Glycine => 75.067,
             Self::Histidine => 155.156,
             Self::Isoleucine => 131.175,
             Self::Leucine => 131.175,
@@ -442,15 +447,18 @@ pub enum GeneTransferMechanism {
 #[inline]
 #[must_use = "returns the amino acid without side effects"]
 pub fn translate_codon_to_aa(codon: &str) -> Result<AminoAcid> {
-    if codon.len() != 3 {
-        return Err(JivanuError::ComputationError(
+    match codon.as_bytes() {
+        &[a, b, c] => decode_codon([a, b, c]),
+        _ => Err(JivanuError::ComputationError(
             "codon must be exactly 3 bases".into(),
-        ));
+        )),
     }
-    let mut buf = [0u8; 3];
-    for (i, c) in codon.bytes().enumerate() {
-        buf[i] = c.to_ascii_uppercase();
-    }
+}
+
+/// Decode one codon from raw bytes (case-insensitive).
+#[inline]
+fn decode_codon(codon: [u8; 3]) -> Result<AminoAcid> {
+    let buf = codon.map(|b| b.to_ascii_uppercase());
     match &buf {
         // Phenylalanine
         b"TTT" | b"TTC" => Ok(AminoAcid::Phenylalanine),
@@ -496,7 +504,7 @@ pub fn translate_codon_to_aa(codon: &str) -> Result<AminoAcid> {
         b"GGT" | b"GGC" | b"GGA" | b"GGG" => Ok(AminoAcid::Glycine),
         _ => Err(JivanuError::ComputationError(format!(
             "unknown codon: {}",
-            core::str::from_utf8(&buf).unwrap_or("???")
+            String::from_utf8_lossy(&buf)
         ))),
     }
 }
@@ -545,7 +553,8 @@ pub const fn codon_degeneracy(aa: AminoAcid) -> u8 {
 
 /// Reverse complement of a DNA sequence.
 ///
-/// `A↔T`, `G↔C`. The result is reversed and complemented.
+/// `A↔T`, `G↔C`. The result is reversed and complemented. Input is
+/// case-insensitive; output is uppercase.
 ///
 /// # Errors
 ///
@@ -559,12 +568,7 @@ pub fn reverse_complement(dna: &str) -> Result<String> {
             b'T' => b'A',
             b'G' => b'C',
             b'C' => b'G',
-            _ => {
-                return Err(JivanuError::ComputationError(format!(
-                    "invalid DNA character: {}",
-                    b as char
-                )));
-            }
+            _ => return Err(invalid_dna_char(dna, 0)),
         };
         result.push(comp);
     }
@@ -582,20 +586,19 @@ pub fn reverse_complement(dna: &str) -> Result<String> {
 ///
 /// # Errors
 ///
-/// Returns error if any codon contains invalid DNA characters.
+/// Returns error if any codon before the first stop contains invalid DNA
+/// characters (including non-ASCII input).
 #[must_use = "returns the protein sequence without side effects"]
 pub fn translate_orf(dna: &str) -> Result<String> {
     let bytes = dna.as_bytes();
     let mut protein = String::with_capacity(bytes.len() / 3);
-    let mut i = 0;
-    while i + 3 <= bytes.len() {
-        let codon = &dna[i..i + 3];
-        let aa = translate_codon_to_aa(codon)?;
+    let (codons, _partial) = bytes.as_chunks::<3>();
+    for &codon in codons {
+        let aa = decode_codon(codon)?;
         if aa == AminoAcid::Stop {
             break;
         }
         protein.push(aa.one_letter());
-        i += 3;
     }
     Ok(protein)
 }
@@ -791,8 +794,8 @@ mod tests {
 
     #[test]
     fn test_amino_acid_molecular_weight_known_values() {
-        // Glycine: lightest amino acid, ~75 Da
-        assert!((AminoAcid::Glycine.molecular_weight() - 75.032).abs() < 0.001);
+        // Glycine C2H5NO2: average mass 75.067 Da (75.032 is monoisotopic)
+        assert!((AminoAcid::Glycine.molecular_weight() - 75.067).abs() < 0.001);
         // Tryptophan: heaviest standard amino acid, ~204 Da
         assert!((AminoAcid::Tryptophan.molecular_weight() - 204.228).abs() < 0.001);
         // Leucine and Isoleucine are isomers: same MW
@@ -1068,14 +1071,14 @@ mod tests {
     fn test_protein_molecular_weight_single_aa() {
         // Single glycine: no peptide bonds
         let mw = protein_molecular_weight("G").unwrap();
-        assert!((mw - 75.032).abs() < 0.001);
+        assert!((mw - 75.067).abs() < 0.001);
     }
 
     #[test]
     fn test_protein_molecular_weight_dipeptide() {
-        // G-A dipeptide: 75.032 + 89.094 - 18.015 = 146.111
+        // Gly-Ala dipeptide: 75.067 + 89.094 - 18.015 = 146.146 (PubChem 146.14)
         let mw = protein_molecular_weight("GA").unwrap();
-        assert!((mw - 146.111).abs() < 0.001);
+        assert!((mw - 146.146).abs() < 0.001);
     }
 
     #[test]
@@ -1143,5 +1146,39 @@ mod tests {
         for aa in &all {
             assert!(set.insert(aa));
         }
+    }
+    // --- Hardening regressions ---
+
+    #[test]
+    fn test_translate_orf_non_ascii_is_error_not_panic() {
+        // Byte-index slicing of &str panicked on multi-byte characters.
+        assert!(translate_orf("ATGÉAA").is_err());
+        assert!(translate_orf("AÉTGGG").is_err());
+        assert!(translate_orf("日本語").is_err());
+    }
+
+    #[test]
+    fn test_translate_orf_case_insensitive_and_partial_codon() {
+        assert_eq!(translate_orf("atgGCCtg").unwrap(), "MA");
+    }
+
+    #[test]
+    fn test_gc_content_reports_offending_char() {
+        let err = gc_content("ACGTé").unwrap_err().to_string();
+        assert!(err.contains('é'), "{err}");
+        assert!((gc_content("gcGC").unwrap() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_reverse_complement_reports_offending_char() {
+        let err = reverse_complement("ACGXT").unwrap_err().to_string();
+        assert!(err.contains('X'), "{err}");
+    }
+
+    #[test]
+    fn test_translate_codon_wrong_length() {
+        assert!(translate_codon_to_aa("AT").is_err());
+        assert!(translate_codon_to_aa("ATGA").is_err());
+        assert!(translate_codon_to_aa("é").is_err()); // 2 bytes
     }
 }

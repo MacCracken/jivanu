@@ -3,7 +3,8 @@
 ## Post-v1.0
 
 ### v1.1–v1.2: High Value Extensions
-- Genome-scale FBA (1000+ reactions, sparse matrices)
+- ~~Exact LP-based FBA/FVA~~ (done in 1.1.0: dense two-phase simplex)
+- Genome-scale FBA (1000+ reactions, sparse matrices / revised simplex)
 - Dynamic FBA (dFBA) — coupled FBA + ODE
 - Gene-reaction rules (GPR) and gene essentiality screens
 - SBML Level 3 import/export (feature-gated)

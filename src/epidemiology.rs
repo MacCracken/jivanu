@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Result, validate_non_negative, validate_positive};
 
 /// SIR compartmental model state.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct SirState {
     /// Susceptible fraction.
     pub s: f64,
@@ -75,7 +75,7 @@ fn sir_step_inner(s: f64, i: f64, r: f64, beta: f64, gamma: f64, dt: f64) -> Res
 }
 
 /// SEIR model state (with exposed compartment).
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct SeirState {
     /// Susceptible fraction.
     pub s: f64,
@@ -88,7 +88,7 @@ pub struct SeirState {
 }
 
 /// Parameters for the SEIR model.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct SeirParams {
     /// Transmission rate.
     pub beta: f64,
@@ -208,6 +208,9 @@ pub fn r_naught(beta: f64, gamma: f64) -> Result<f64> {
 ///
 /// `H = 1 - 1/R0`
 ///
+/// For `R0 ≤ 1` the result is `≤ 0` (no immunity is needed to prevent an
+/// epidemic); [`critical_vaccination_coverage`] clamps this to zero.
+///
 /// # Errors
 ///
 /// Returns error if R0 is non-positive.
@@ -224,7 +227,7 @@ pub fn herd_immunity_threshold(r0: f64) -> Result<f64> {
 ///
 /// # Errors
 ///
-/// Returns error if cases is zero.
+/// Returns error if cases is zero or deaths exceed cases.
 #[inline]
 #[must_use = "returns the CFR without side effects"]
 pub fn case_fatality_rate(deaths: u64, cases: u64) -> Result<f64> {
@@ -233,10 +236,17 @@ pub fn case_fatality_rate(deaths: u64, cases: u64) -> Result<f64> {
             "cases must be > 0".into(),
         ));
     }
+    if deaths > cases {
+        return Err(crate::error::JivanuError::ComputationError(format!(
+            "deaths ({deaths}) cannot exceed cases ({cases})"
+        )));
+    }
     Ok(deaths as f64 / cases as f64)
 }
 
 /// Run a full SIR trajectory.
+///
+/// Returns `steps + 1` states, starting with the initial state.
 ///
 /// When the `hisab` feature is enabled, uses [`hisab::num::rk4_trajectory`]
 /// for fourth-order Runge-Kutta integration with Neumaier-compensated
@@ -261,6 +271,14 @@ pub fn sir_trajectory(
     validate_positive(beta, "beta")?;
     validate_positive(gamma, "gamma")?;
     validate_positive(dt, "dt")?;
+    crate::error::trajectory_capacity(steps)?;
+    if steps == 0 {
+        return Ok(vec![SirState {
+            s: s0,
+            i: i0,
+            r: r0,
+        }]);
+    }
 
     sir_trajectory_inner(s0, i0, r0, beta, gamma, dt, steps)
 }
@@ -309,7 +327,7 @@ fn sir_trajectory_inner(
     dt: f64,
     steps: usize,
 ) -> Result<Vec<SirState>> {
-    let mut traj = Vec::with_capacity(steps + 1);
+    let mut traj = Vec::with_capacity(crate::error::trajectory_capacity(steps)?);
     let mut state = SirState {
         s: s0,
         i: i0,
@@ -324,7 +342,7 @@ fn sir_trajectory_inner(
 }
 
 /// SIRS model state (SIR with waning immunity).
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct SirsState {
     /// Susceptible fraction.
     pub s: f64,
@@ -344,7 +362,7 @@ pub struct SirsState {
 ///
 /// - `delta` — rate of immunity waning (1/duration of immunity)
 /// - `nu` — vaccination rate (fraction of susceptibles vaccinated per time unit)
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct SirsParams {
     /// Transmission rate.
     pub beta: f64,
@@ -466,6 +484,8 @@ pub fn critical_vaccination_coverage(r0: f64) -> Result<f64> {
 
 /// Run a full SEIR trajectory.
 ///
+/// Returns `steps + 1` states, starting with the initial state.
+///
 /// When the `hisab` feature is enabled, uses RK4 integration.
 ///
 /// # Errors
@@ -485,6 +505,10 @@ pub fn seir_trajectory(
     validate_positive(params.sigma, "sigma")?;
     validate_positive(params.gamma, "gamma")?;
     validate_positive(params.dt, "dt")?;
+    crate::error::trajectory_capacity(steps)?;
+    if steps == 0 {
+        return Ok(vec![*state0]);
+    }
 
     seir_trajectory_inner(state0, params, steps)
 }
@@ -533,7 +557,7 @@ fn seir_trajectory_inner(
     params: &SeirParams,
     steps: usize,
 ) -> Result<Vec<SeirState>> {
-    let mut traj = Vec::with_capacity(steps + 1);
+    let mut traj = Vec::with_capacity(crate::error::trajectory_capacity(steps)?);
     let mut state = *state0;
     traj.push(state);
     for _ in 0..steps {
@@ -885,5 +909,59 @@ mod tests {
         let json = serde_json::to_string(&params).unwrap();
         let back: SirsParams = serde_json::from_str(&json).unwrap();
         assert!((params.delta - back.delta).abs() < 1e-10);
+    }
+    // --- Hardening regressions ---
+
+    #[test]
+    fn test_trajectories_zero_steps_return_initial_state() {
+        // With the hisab feature, zero steps used to error inside RK4.
+        let traj = sir_trajectory(0.99, 0.01, 0.0, 0.3, 0.1, 0.1, 0).unwrap();
+        assert_eq!(traj.len(), 1);
+        assert_eq!(
+            traj[0],
+            SirState {
+                s: 0.99,
+                i: 0.01,
+                r: 0.0
+            }
+        );
+        let s0 = SeirState {
+            s: 0.9,
+            e: 0.05,
+            i: 0.05,
+            r: 0.0,
+        };
+        let p = SeirParams {
+            beta: 0.5,
+            sigma: 0.2,
+            gamma: 0.1,
+            dt: 0.1,
+        };
+        let traj = seir_trajectory(&s0, &p, 0).unwrap();
+        assert_eq!(traj, vec![s0]);
+    }
+
+    #[test]
+    fn test_trajectory_absurd_steps_is_error() {
+        assert!(sir_trajectory(0.99, 0.01, 0.0, 0.3, 0.1, 0.1, usize::MAX).is_err());
+    }
+
+    #[test]
+    fn test_case_fatality_rate_deaths_exceed_cases() {
+        assert!(case_fatality_rate(11, 10).is_err());
+        assert!((case_fatality_rate(10, 10).unwrap() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_sir_final_size_relation() {
+        // Kermack-McKendrick final size: ln(s_inf) = R0·(s_inf - 1) for s0 ≈ 1.
+        let traj = sir_trajectory(0.999_999, 0.000_001, 0.0, 0.25, 0.1, 0.05, 40_000).unwrap();
+        let s_inf = traj.last().unwrap().s;
+        let r0 = 2.5;
+        let residual = s_inf.ln() - r0 * (s_inf - 1.0);
+        assert!(
+            residual.abs() < 5e-3,
+            "s_inf = {s_inf}, residual = {residual}"
+        );
     }
 }

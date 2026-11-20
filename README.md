@@ -6,12 +6,18 @@ Part of the [AGNOS](https://github.com/MacCracken/agnosticos) science crate ecos
 
 ## Key Capabilities
 
-- **Growth Kinetics**: Exponential/logistic growth, Monod kinetics, doubling time, chemostat
-- **Metabolism**: Michaelis-Menten enzyme kinetics, ATP yields, enzyme inhibition
-- **Genetics**: Mutation rates, Hardy-Weinberg equilibrium, GC content, codon translation
-- **Epidemiology**: SIR/SEIR models, R0, herd immunity threshold, case fatality rate
+- **Growth Kinetics**: Exponential/logistic/Gompertz/Baranyi growth, Monod kinetics, chemostat,
+  Lotka-Volterra competition, cardinal temperature/pH models
+- **Metabolism**: Michaelis-Menten, enzyme inhibition, Hill/Emax, ATP yields, stoichiometric
+  networks, exact flux balance analysis (FBA) and flux variability analysis (FVA)
+- **Genetics**: Mutation rates, Hardy-Weinberg equilibrium, GC content, codon translation,
+  amino acid properties
+- **Epidemiology**: SIR/SEIR/SIRS models, R0, herd immunity, vaccination, case fatality rate
+- **Pharmacokinetics**: IV/oral one-compartment, two-compartment, AUC, half-life
+- **Stochastic**: Gillespie SSA and tau-leaping for arbitrary reaction networks
 - **Biofilm**: Formation stages, quorum sensing, nutrient diffusion
-- **Resistance**: Kill curves, MIC, resistance transfer rates
+- **Resistance**: Kill curves, MIC, FIC index, checkerboard, drug combinations
+- **Bridges**: PK-driven time-kill, PK/PD indices (T>MIC, Cmax/MIC, AUC/MIC), biofilm effects
 - **Taxonomy**: Domain classification, Gram stain, morphology, oxygen requirements
 
 ## Quick Start
@@ -37,11 +43,12 @@ assert!((h - 0.6).abs() < 1e-10); // 60%
 | Feature | Default | Description |
 |---------|---------|-------------|
 | `std` | Yes | Standard library support |
-| `hisab` | No | Advanced math via hisab |
-| `pramana` | No | Statistics via pramana |
-| `kimiya` | No | Chemistry via kimiya |
-| `logging` | No | Tracing subscriber |
+| `hisab` | No | RK4 ODE integration via hisab (forward Euler otherwise) |
+| `kimiya` | No | Chemistry bridges via kimiya (Arrhenius, pH, half-life) |
 | `full` | No | All features |
+| `pramana`, `logging` | No | Deprecated no-ops (kept for compatibility) |
+
+Minimum supported Rust version: **1.100**.
 
 ## License
 

@@ -10,7 +10,7 @@ use crate::error::{Result, validate_non_negative, validate_positive};
 use crate::{biofilm, growth, pharmacokinetics, resistance};
 
 /// A single time point in a PK-driven time-kill simulation.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct TimeKillPoint {
     /// Time after drug administration (hr).
     pub time: f64,
@@ -25,6 +25,11 @@ pub struct TimeKillPoint {
 /// At each time step, computes the plasma concentration from the
 /// one-compartment IV bolus model, then applies the kill curve to
 /// determine bacterial survival.
+///
+/// The kill curve value at concentration `C` is treated as the surviving
+/// fraction per unit time, so cumulative survival is
+/// `S(t) = exp(∫₀ᵗ ln kill_curve(C(τ)) dτ)`, integrated with the trapezoidal
+/// rule over each step. Survival is exactly 1 at `t = 0` and never increases.
 ///
 /// This bridges [`pharmacokinetics::iv_bolus_concentration`] with
 /// [`resistance::kill_curve`] to produce a full time-kill trajectory.
@@ -59,21 +64,37 @@ pub fn iv_time_kill(
     validate_positive(kill_rate, "kill_rate")?;
     validate_positive(dt, "dt")?;
 
-    let mut trajectory = Vec::with_capacity(steps + 1);
-    let mut cumulative_survival = 1.0;
+    time_kill_trajectory(dt, steps, mic, kill_rate, |t| {
+        pharmacokinetics::iv_bolus_concentration(dose, v_d, k_e, t)
+    })
+}
+
+/// Shared time-kill integrator: trapezoidal rule on the log-survival rate.
+fn time_kill_trajectory(
+    dt: f64,
+    steps: usize,
+    mic: f64,
+    kill_rate: f64,
+    concentration_at: impl Fn(f64) -> Result<f64>,
+) -> Result<Vec<TimeKillPoint>> {
+    let mut trajectory = Vec::with_capacity(crate::error::trajectory_capacity(steps)?);
+    let mut log_survival = 0.0;
+    let mut prev_log_rate: Option<f64> = None;
 
     for step in 0..=steps {
         let t = dt * step as f64;
-        let conc = pharmacokinetics::iv_bolus_concentration(dose, v_d, k_e, t)?;
-        // Instantaneous survival fraction at this concentration
-        let instant_survival = resistance::kill_curve(conc, mic, kill_rate)?;
-        // Cumulative: survival decreases over time, never recovers
-        cumulative_survival *= instant_survival.powf(dt);
+        let conc = concentration_at(t)?;
+        // ln(per-unit-time survival) at this concentration (≤ 0).
+        let log_rate = resistance::kill_curve(conc, mic, kill_rate)?.ln();
+        if let Some(prev) = prev_log_rate {
+            log_survival += 0.5 * dt * (prev + log_rate);
+        }
+        prev_log_rate = Some(log_rate);
 
         trajectory.push(TimeKillPoint {
             time: t,
             concentration: conc,
-            survival: cumulative_survival,
+            survival: log_survival.exp(),
         });
     }
 
@@ -81,7 +102,7 @@ pub fn iv_time_kill(
 }
 
 /// Parameters for an oral PK time-kill simulation.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct OralTimeKillParams {
     /// Administered dose (mg).
     pub dose: f64,
@@ -102,7 +123,7 @@ pub struct OralTimeKillParams {
 /// Simulate bacterial survival over time given oral drug administration.
 ///
 /// Bridges [`pharmacokinetics::oral_concentration`] with
-/// [`resistance::kill_curve`].
+/// [`resistance::kill_curve`]. Survival is accumulated as in [`iv_time_kill`].
 ///
 /// # Errors
 ///
@@ -122,30 +143,16 @@ pub fn oral_time_kill(
     validate_positive(params.kill_rate, "kill_rate")?;
     validate_positive(dt, "dt")?;
 
-    let mut trajectory = Vec::with_capacity(steps + 1);
-    let mut cumulative_survival = 1.0;
-
-    for step in 0..=steps {
-        let t = dt * step as f64;
-        let conc = pharmacokinetics::oral_concentration(
+    time_kill_trajectory(dt, steps, params.mic, params.kill_rate, |t| {
+        pharmacokinetics::oral_concentration(
             params.dose,
             params.bioavailability,
             params.v_d,
             params.k_a,
             params.k_e,
             t,
-        )?;
-        let instant_survival = resistance::kill_curve(conc, params.mic, params.kill_rate)?;
-        cumulative_survival *= instant_survival.powf(dt);
-
-        trajectory.push(TimeKillPoint {
-            time: t,
-            concentration: conc,
-            survival: cumulative_survival,
-        });
-    }
-
-    Ok(trajectory)
+        )
+    })
 }
 
 /// Time above MIC for an IV bolus.
@@ -212,9 +219,9 @@ pub fn auc_mic_ratio(dose: f64, v_d: f64, k_e: f64, mic: f64) -> Result<f64> {
 
 /// Determine whether regrowth occurs after IV bolus dosing.
 ///
-/// Combines growth (Monod kinetics) with PK-driven killing. Returns the
-/// time at which the drug concentration drops below MIC, after which
-/// surviving bacteria can resume exponential growth.
+/// Returns the time at which the drug concentration falls to the MIC
+/// (`ln(C_0/MIC)/k_e`, the same value as [`time_above_mic`]), after which
+/// surviving bacteria can resume growth.
 ///
 /// Returns `None` if C_0 never exceeds MIC (no killing phase).
 ///
@@ -279,9 +286,10 @@ pub fn multi_dose_concentration(
     let mut total = 0.0;
     for k in 0..n_doses {
         let t_dose = tau * k as f64;
-        if t >= t_dose {
-            total += c0 * (-k_e * (t - t_dose)).exp();
+        if t < t_dose {
+            break; // later doses have not been given yet
         }
+        total += c0 * (-k_e * (t - t_dose)).exp();
     }
     Ok(total)
 }
@@ -865,5 +873,53 @@ mod tests {
         // k = ln(2) → t½ = 1.0 → ke = ln(2)
         let ke = chemical_half_life_to_pk(core::f64::consts::LN_2).unwrap();
         assert!((ke - core::f64::consts::LN_2).abs() < 1e-10);
+    }
+    // --- Hardening regressions ---
+
+    #[test]
+    fn test_time_kill_survival_starts_at_one_and_never_increases() {
+        // Survival at t = 0 was previously already reduced by one step.
+        let traj = iv_time_kill(500.0, 50.0, 0.1, 5.0, 1.0, 0.5, 40).unwrap();
+        assert!((traj[0].survival - 1.0).abs() < 1e-15);
+        for w in traj.windows(2) {
+            assert!(w[1].survival <= w[0].survival);
+        }
+    }
+
+    #[test]
+    fn test_iv_time_kill_matches_analytic_integral() {
+        // While C(t) > MIC: ln S(t) = -k·[C0/(MIC·k_e)·(1 - e^(-k_e·t)) - t].
+        let (dose, v_d, k_e, mic, k) = (1000.0, 50.0, 0.1, 5.0, 0.5);
+        let c0 = dose / v_d;
+        let t_end = 5.0; // C(5) = 20·e^-0.5 ≈ 12.1 > MIC
+        let steps = 500;
+        let traj = iv_time_kill(dose, v_d, k_e, mic, k, t_end / steps as f64, steps).unwrap();
+        let s_num = traj.last().unwrap().survival;
+        let ln_s = -k * (c0 / (mic * k_e) * (1.0 - (-k_e * t_end).exp()) - t_end);
+        assert!(
+            (s_num.ln() - ln_s).abs() < 1e-5,
+            "{} vs {}",
+            s_num.ln(),
+            ln_s
+        );
+    }
+
+    #[test]
+    fn test_multi_dose_matches_superposition() {
+        let (dose, v_d, k_e, tau) = (100.0, 10.0, 0.2, 6.0);
+        for &t in &[0.0, 5.9, 6.0, 13.0, 100.0] {
+            let c = multi_dose_concentration(dose, v_d, k_e, tau, 4, t).unwrap();
+            let expected: f64 = (0..4)
+                .map(|k| tau * f64::from(k))
+                .filter(|&td| t >= td)
+                .map(|td| dose / v_d * (-k_e * (t - td)).exp())
+                .sum();
+            assert!((c - expected).abs() < 1e-12, "t = {t}");
+        }
+    }
+
+    #[test]
+    fn test_time_kill_absurd_steps_is_error() {
+        assert!(iv_time_kill(500.0, 50.0, 0.1, 5.0, 1.0, 0.5, usize::MAX).is_err());
     }
 }

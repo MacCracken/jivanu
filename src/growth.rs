@@ -116,7 +116,7 @@ pub fn chemostat_steady_state(
 }
 
 /// State of a two-strain competition system.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct TwoStrainState {
     /// Population density of strain 1.
     pub n1: f64,
@@ -134,7 +134,7 @@ pub struct TwoStrainState {
 /// dN1/dt = r1 * N1 * (1 - (N1 + α12*N2) / K1)
 /// dN2/dt = r2 * N2 * (1 - (N2 + α21*N1) / K2)
 /// ```
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct CompetitionParams {
     /// Intrinsic growth rate of strain 1.
     pub r1: f64,
@@ -273,11 +273,16 @@ fn competition_step_inner(
     })
 }
 
-/// Baranyi-Roberts growth model with explicit lag phase.
+/// Baranyi-Roberts growth model with explicit lag phase (sharp-lag form).
 ///
-/// Uses the commonly applied three-parameter form:
+/// Uses the commonly applied lag-shifted logistic form:
 /// `N(t) = N_max / (1 + ((N_max/N_0) - 1) × e^(-μ_max × (t - lag)))`
 /// for `t > lag`, and `N(t) = N_0` for `t ≤ lag`.
+///
+/// This is the limit of the full Baranyi-Roberts model (curvature `m = 1`)
+/// when the lag-to-exponential transition is abrupt, i.e. the adjustment
+/// function `A(t)` is replaced by `max(0, t - lag)`. It slightly
+/// overestimates growth just after the lag compared with the smooth model.
 ///
 /// Reference: Baranyi & Roberts (1994) Int J Food Microbiol 23:277-294.
 ///
@@ -313,7 +318,8 @@ pub fn baranyi_roberts(n0: f64, n_max: f64, mu_max: f64, lag: f64, t: f64) -> Re
 ///
 /// # Errors
 ///
-/// Returns error if parameters are invalid.
+/// Returns error if parameters are invalid or `n_max <= n0` (the asymptote
+/// `A = ln(N_max/N_0)` must be positive).
 #[inline]
 #[must_use = "returns the population without side effects"]
 pub fn gompertz(n0: f64, n_max: f64, mu_max: f64, lag: f64, t: f64) -> Result<f64> {
@@ -322,6 +328,11 @@ pub fn gompertz(n0: f64, n_max: f64, mu_max: f64, lag: f64, t: f64) -> Result<f6
     validate_positive(mu_max, "mu_max")?;
     validate_non_negative(lag, "lag")?;
     validate_non_negative(t, "t")?;
+    if n_max <= n0 {
+        return Err(JivanuError::ComputationError(format!(
+            "n_max ({n_max}) must exceed n0 ({n0}) for the Gompertz model"
+        )));
+    }
 
     let a = (n_max / n0).ln();
     let e = core::f64::consts::E;
@@ -565,8 +576,8 @@ pub fn multi_species_chemostat(
     let mut best_idx = 0;
     let mut best_r_star = f64::MAX;
 
-    for i in 0..mu_max.len() {
-        let r = tilman_r_star(mu_max[i], k_s[i], dilution_rate)?;
+    for (i, (&mu, &k)) in mu_max.iter().zip(k_s).enumerate() {
+        let r = tilman_r_star(mu, k, dilution_rate)?;
         if r < best_r_star {
             best_r_star = r;
             best_idx = i;
@@ -577,7 +588,7 @@ pub fn multi_species_chemostat(
 }
 
 /// Stochastic birth-death event from the Gillespie algorithm.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct GillespieEvent {
     /// Time at which the event occurred.
     pub time: f64,
@@ -593,6 +604,10 @@ pub struct GillespieEvent {
 ///
 /// Produces exact stochastic trajectories for discrete populations.
 /// Uses a simple linear congruential RNG seeded by `seed`.
+///
+/// For a supercritical process (`birth_rate > death_rate`) the number of
+/// events grows roughly like `e^((b - d)·t_end)`; keep `t_end` modest or use
+/// [`crate::stochastic::gillespie_ssa`], which accepts a `max_events` cap.
 ///
 /// # Arguments
 ///
@@ -620,7 +635,7 @@ pub fn gillespie_birth_death(
     let mut events = Vec::new();
     let mut t = 0.0;
     let mut n = n0;
-    let mut rng_state = seed.wrapping_add(1); // avoid zero seed
+    let mut rng = crate::rng::Lcg::new(seed);
 
     events.push(GillespieEvent {
         time: t,
@@ -633,15 +648,8 @@ pub fn gillespie_birth_death(
             break;
         }
 
-        // Generate two uniform random numbers via LCG
-        rng_state = rng_state
-            .wrapping_mul(6_364_136_223_846_793_005)
-            .wrapping_add(1);
-        let u1 = (rng_state >> 33) as f64 / (1u64 << 31) as f64;
-        rng_state = rng_state
-            .wrapping_mul(6_364_136_223_846_793_005)
-            .wrapping_add(1);
-        let u2 = (rng_state >> 33) as f64 / (1u64 << 31) as f64;
+        let u1 = rng.next_f64();
+        let u2 = rng.next_f64();
 
         // Time to next event (exponential distribution)
         let u1_clamped = u1.max(1e-15); // avoid ln(0)
@@ -655,9 +663,9 @@ pub fn gillespie_birth_death(
         // Determine event type
         let birth_prob = birth_rate * n as f64 / total_rate;
         if u2 < birth_prob {
-            n += 1; // birth
+            n = n.saturating_add(1); // birth
         } else {
-            n -= 1; // death
+            n = n.saturating_sub(1); // death
         }
 
         events.push(GillespieEvent {
@@ -716,17 +724,43 @@ pub fn n_strain_competition_step(
             )));
         }
     }
-    for i in 0..n {
-        validate_non_negative(populations[i], "population")?;
-        validate_positive(growth_rates[i], "growth_rate")?;
-        validate_positive(carrying_capacities[i], "carrying_capacity")?;
-        for val in &alpha[i] {
-            validate_non_negative(*val, "alpha element")?;
+    for (((&p, &r), &k), row) in populations
+        .iter()
+        .zip(growth_rates)
+        .zip(carrying_capacities)
+        .zip(alpha)
+    {
+        validate_non_negative(p, "population")?;
+        validate_positive(r, "growth_rate")?;
+        validate_positive(k, "carrying_capacity")?;
+        for &val in row {
+            validate_non_negative(val, "alpha element")?;
         }
     }
     validate_positive(dt, "dt")?;
 
-    n_strain_step_inner(populations, growth_rates, carrying_capacities, alpha, dt, n)
+    n_strain_step_inner(populations, growth_rates, carrying_capacities, alpha, dt)
+}
+
+/// Lotka-Volterra right-hand side `dN_i/dt = r_i N_i (1 - Σ_j α_ij N_j / K_i)`.
+#[inline]
+fn n_strain_derivative(
+    y: &[f64],
+    growth_rates: &[f64],
+    carrying_capacities: &[f64],
+    alpha: &[Vec<f64>],
+    dy: &mut [f64],
+) {
+    for ((((d, &yi), &r), &k), row) in dy
+        .iter_mut()
+        .zip(y)
+        .zip(growth_rates)
+        .zip(carrying_capacities)
+        .zip(alpha)
+    {
+        let sum: f64 = row.iter().zip(y).map(|(a, yj)| a * yj).sum();
+        *d = r * yi * (1.0 - sum / k);
+    }
 }
 
 #[cfg(feature = "hisab")]
@@ -736,21 +770,9 @@ fn n_strain_step_inner(
     carrying_capacities: &[f64],
     alpha: &[Vec<f64>],
     dt: f64,
-    n: usize,
 ) -> Result<Vec<f64>> {
-    let r = growth_rates.to_vec();
-    let k = carrying_capacities.to_vec();
-    let a: Vec<Vec<f64>> = alpha.to_vec();
     let result = hisab::num::rk4(
-        move |_t, y, dy| {
-            for i in 0..n {
-                let mut sum = 0.0;
-                for j in 0..n {
-                    sum += a[i][j] * y[j];
-                }
-                dy[i] = r[i] * y[i] * (1.0 - sum / k[i]);
-            }
-        },
+        |_t, y, dy| n_strain_derivative(y, growth_rates, carrying_capacities, alpha, dy),
         0.0,
         populations,
         dt,
@@ -767,18 +789,20 @@ fn n_strain_step_inner(
     carrying_capacities: &[f64],
     alpha: &[Vec<f64>],
     dt: f64,
-    n: usize,
 ) -> Result<Vec<f64>> {
-    let mut result = Vec::with_capacity(n);
-    for i in 0..n {
-        let mut sum = 0.0;
-        for j in 0..n {
-            sum += alpha[i][j] * populations[j];
-        }
-        let dn = growth_rates[i] * populations[i] * (1.0 - sum / carrying_capacities[i]);
-        result.push((populations[i] + dn * dt).max(0.0));
-    }
-    Ok(result)
+    let mut dy = vec![0.0; populations.len()];
+    n_strain_derivative(
+        populations,
+        growth_rates,
+        carrying_capacities,
+        alpha,
+        &mut dy,
+    );
+    Ok(populations
+        .iter()
+        .zip(&dy)
+        .map(|(p, d)| (p + d * dt).max(0.0))
+        .collect())
 }
 
 #[cfg(test)]
@@ -1375,5 +1399,32 @@ mod tests {
     #[test]
     fn test_multi_species_chemostat_empty() {
         assert!(multi_species_chemostat(&[], &[], 0.2).is_err());
+    }
+    // --- Hardening regressions ---
+
+    #[test]
+    fn test_gompertz_requires_n_max_above_n0() {
+        // n_max == n0 divided by zero (A = 0) and produced NaN.
+        assert!(gompertz(100.0, 100.0, 1.0, 1.0, 1.0).is_err());
+        assert!(gompertz(100.0, 50.0, 1.0, 1.0, 1.0).is_err());
+    }
+
+    #[test]
+    fn test_gompertz_zwietering_inflection() {
+        // Modified Gompertz: at t = lag + A/(μ·e) the curve's ln-ratio is A/e.
+        let (n0, n_max, mu, lag): (f64, f64, f64, f64) = (1e3, 1e9, 0.8, 2.0);
+        let a = (n_max / n0).ln();
+        let t_infl = lag + a / (mu * core::f64::consts::E);
+        let n = gompertz(n0, n_max, mu, lag, t_infl).unwrap();
+        assert!(((n / n0).ln() - a / core::f64::consts::E).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_n_strain_converges_to_carrying_capacity() {
+        let mut pops = vec![10.0];
+        for _ in 0..2000 {
+            pops = n_strain_competition_step(&pops, &[0.5], &[500.0], &[vec![1.0]], 0.05).unwrap();
+        }
+        assert!((pops[0] - 500.0).abs() < 1e-3, "{}", pops[0]);
     }
 }

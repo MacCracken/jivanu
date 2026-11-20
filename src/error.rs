@@ -64,6 +64,17 @@ pub(crate) fn validate_non_negative(value: f64, name: &str) -> Result<()> {
     }
 }
 
+/// Capacity of a trajectory with `steps` steps (`steps + 1` points).
+///
+/// Errors instead of overflowing or aborting on an absurd allocation.
+#[inline]
+pub(crate) fn trajectory_capacity(steps: usize) -> Result<usize> {
+    steps
+        .checked_add(1)
+        .filter(|&n| n <= isize::MAX as usize / 64)
+        .ok_or_else(|| JivanuError::ComputationError(format!("too many steps: {steps}")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -92,5 +103,34 @@ mod tests {
     fn test_validate_positive() {
         assert!(validate_positive(1.0, "x").is_ok());
         assert!(validate_positive(0.0, "x").is_err());
+        assert!(validate_positive(f64::INFINITY, "x").is_err());
+    }
+
+    #[test]
+    fn test_validate_non_negative() {
+        assert!(validate_non_negative(0.0, "x").is_ok());
+        assert!(validate_non_negative(-1e-300, "x").is_err());
+        assert!(validate_non_negative(f64::NAN, "x").is_err());
+    }
+
+    #[test]
+    fn test_trajectory_capacity() {
+        assert_eq!(trajectory_capacity(0).unwrap(), 1);
+        assert_eq!(trajectory_capacity(10).unwrap(), 11);
+        assert!(trajectory_capacity(usize::MAX).is_err());
+    }
+
+    #[test]
+    fn test_all_variants_serde_roundtrip() {
+        for err in [
+            JivanuError::InvalidConcentration("a".into()),
+            JivanuError::InvalidRate("b".into()),
+            JivanuError::SimulationFailed("c".into()),
+            JivanuError::ComputationError("d".into()),
+        ] {
+            let json = serde_json::to_string(&err).unwrap();
+            let back: JivanuError = serde_json::from_str(&json).unwrap();
+            assert_eq!(err.to_string(), back.to_string());
+        }
     }
 }

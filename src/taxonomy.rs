@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Three domains of life.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum Domain {
     /// True bacteria.
@@ -15,7 +15,7 @@ pub enum Domain {
 }
 
 /// Gram stain classification.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum GramStain {
     /// Thick peptidoglycan layer, retains crystal violet.
@@ -25,7 +25,7 @@ pub enum GramStain {
 }
 
 /// Cell shape (morphology).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum CellShape {
     /// Spherical.
@@ -41,7 +41,7 @@ pub enum CellShape {
 }
 
 /// Oxygen requirement.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum OxygenRequirement {
     /// Requires oxygen for growth.
@@ -55,7 +55,7 @@ pub enum OxygenRequirement {
 }
 
 /// Basic microbial organism profile.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MicrobialProfile {
     /// Domain of life.
     pub domain: Domain,
@@ -303,5 +303,19 @@ mod tests {
         let back: MicrobialProfile = serde_json::from_str(&json).unwrap();
         assert_eq!(profile.domain, back.domain);
         assert_eq!(profile.shape, back.shape);
+    }
+    #[test]
+    fn test_microbial_profile_eq_and_hash() {
+        use std::collections::HashSet;
+        let a = MicrobialProfile {
+            domain: Domain::Bacteria,
+            gram_stain: GramStain::Positive,
+            shape: CellShape::Bacillus,
+            oxygen: OxygenRequirement::Facultative,
+        };
+        let b = a; // Copy
+        assert_eq!(a, b);
+        let set: HashSet<MicrobialProfile> = [a, b].into_iter().collect();
+        assert_eq!(set.len(), 1);
     }
 }

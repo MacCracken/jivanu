@@ -1,42 +1,52 @@
 [package]
 name = "jivanu"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
-rust-version = "1.89"
+rust-version = "1.100"
 license = "GPL-3.0-only"
 
 description = "Jivanu — microbiology engine for growth kinetics, metabolism, genetics, and epidemiology"
-homepage = "https://github.com/MacCracken/jivanu"
 repository = "https://github.com/MacCracken/jivanu"
 readme = "README.md"
 documentation = "https://docs.rs/jivanu"
 keywords = ["microbiology", "kinetics", "metabolism", "genetics", "epidemiology"]
 categories = ["science", "simulation"]
-exclude = [".claude/", ".github/", "docs/", "scripts/"]
+exclude = [".claude/", ".github/", "docs/", "scripts/", "bench-history.csv", "benchmarks.md"]
 
 [features]
 default = ["std"]
 std = ["serde/std", "thiserror/std"]
 full = ["std", "logging", "hisab", "pramana", "kimiya"]
-logging = ["dep:tracing-subscriber"]
 hisab = ["dep:hisab"]
-pramana = ["dep:pramana"]
 kimiya = ["dep:kimiya"]
+# Deprecated no-op features, kept so existing `features = [...]` lists keep
+# compiling. They never gated any code; their dependencies were removed in 1.1.0.
+logging = []
+pramana = []
 
 [dependencies]
-serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
-thiserror = { version = "2", default-features = false }
-tracing = { version = "0.1", default-features = false }
+serde = { version = "1.0.229", default-features = false, features = ["derive", "alloc"] }
+thiserror = { version = "2.0.21", default-features = false }
 
 # Optional
-hisab = { version = "1", optional = true }
-pramana = { version = "1", optional = true }
-kimiya = { version = "1", optional = true }
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"], optional = true }
+hisab = { version = "1.4", optional = true }
+kimiya = { version = "1.2", optional = true }
 
 [dev-dependencies]
-criterion = { version = "0.8", features = ["html_reports"] }
-serde_json = "1"
+criterion = { version = "0.8.2", features = ["html_reports"] }
+serde_json = "1.0.154"
+
+[package.metadata.docs.rs]
+all-features = true
+
+[lints.rust]
+missing_docs = "warn"
+unsafe_code = "forbid"
+
+[lints.clippy]
+expect_used = "deny"
+panic = "deny"
+unwrap_used = "deny"
 
 [[bench]]
 name = "benchmarks"
