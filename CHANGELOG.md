@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [1.1.0] - 2026-11-19
+## [1.1.0] - 2026-11-20
 
 Toolchain and dependency refresh plus a P(-1) audit: correctness repairs,
 panic hardening, and optimizations. Most changes fix wrong results; see the
@@ -17,6 +17,9 @@ panic hardening, and optimizations. Most changes fix wrong results; see the
 
 - **MSRV raised to Rust 1.100** (from 1.89); edition 2024. Lets the resolver
   pick the latest dependency releases.
+- Removed `rust-toolchain.toml`. Its `channel = "stable"` overrode the
+  toolchain pinned by CI jobs, so the MSRV, build, and publish jobs ran on
+  whatever stable the runner image shipped instead of the version requested.
 - Dependencies: `hisab` 1.4, `kimiya` 1.2, `serde` 1.0.229, `thiserror` 2.0.21;
   dev: `criterion` 0.8.2, `serde_json` 1.0.154.
 - Removed unused dependencies `tracing`, `tracing-subscriber`, and `pramana`
